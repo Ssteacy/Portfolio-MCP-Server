@@ -173,18 +173,11 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             if not okr_name:
                 return [TextContent(type="text", text="Error: okr_name is required")]
             
-            # Find the OKR by name (partial match)
-            board_type = 'company_okr' if department == 'company' else 'proddev_okr'
-            okr_items = pi.client.get_board_items(board_type)
-            
-            matching_okr = None
-            for okr in okr_items:
-                if okr_name.lower() in okr['name'].lower():
-                    matching_okr = okr
-                    break
+            # Find the OKR by name using the new helper
+            matching_okr = pi.find_okr_by_name(okr_name, department)
             
             if not matching_okr:
-                return [TextContent(type="text", text=f"OKR matching '{okr_name}' not found in {department} board")]
+                return [TextContent(type="text", text=f"OKR matching '{okr_name}' not found in {department}")]
             
             result = pi.get_okr_contributing_projects(matching_okr['id'])
             at_risk = [p for p in result if p.get('at_risk', False)]
@@ -192,18 +185,18 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             # Format the response
             response = f"""**OKR Contributing Projects**
 
-🎯 **OKR:** {matching_okr['name']}
-📊 **Contributing Projects:** {len(result)}
-⚠️  **At Risk:** {len(at_risk)}
+        🎯 **OKR:** {matching_okr['name']}
+        📊 **Contributing Projects:** {len(result)}
+        ⚠️  **At Risk:** {len(at_risk)}
 
-**Projects:**
-"""
+        **Projects:**
+        """
             if result:
                 for proj in result:
                     risk_icon = "⚠️" if proj.get('at_risk', False) else "✅"
                     response += f"\n{risk_icon} **{proj['project_name']}** ({proj.get('status', 'N/A')})"
                     if proj.get('okr_links'):
-                        response += f"\n   Links: {proj['okr_links'][0]}"
+                        response += f"\n   Links: {', '.join(proj['okr_links'][:2])}"
                     response += "\n"
             else:
                 response += "\nNo projects currently linked to this OKR."

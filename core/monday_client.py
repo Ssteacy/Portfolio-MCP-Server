@@ -194,34 +194,38 @@ class MondayClient:
         
         query = f"""
         query {{
-          boards(ids: {board_id}) {{
+        boards(ids: {board_id}) {{
             items_page(limit: {limit}) {{
-              items {{
+            items {{
                 id
                 name
                 column_values {{
-                  id
-                  text
-                  value
-                  type
-                  ... on BoardRelationValue {{
+                id
+                text
+                value
+                type
+                ... on BoardRelationValue {{
                     linked_item_ids
                     display_value
-                  }}
+                }}
                 }}
                 subitems {{
-                  id
-                  name
-                  column_values {{
+                id
+                name
+                column_values {{
                     id
                     text
                     value
                     type
-                  }}
+                    ... on BoardRelationValue {{
+                    linked_item_ids
+                    display_value
+                    }}
                 }}
-              }}
+                }}
             }}
-          }}
+            }}
+        }}
         }}
         """
         

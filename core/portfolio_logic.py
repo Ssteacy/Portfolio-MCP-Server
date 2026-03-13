@@ -93,6 +93,33 @@ class PortfolioIntelligence:
         self._okr_cache = okr_map
         return okr_map
     
+    def find_okr_by_name(self, okr_name: str, department: Optional[str] = None) -> Optional[Dict]:
+        """
+        Find an OKR by name (partial match) across all OKR boards
+        
+        Args:
+            okr_name: OKR name to search for (partial match)
+            department: Optional department filter
+        
+        Returns:
+            Matching OKR item or None
+        """
+        okr_map = self._get_all_okr_items()
+        
+        # Filter by department if specified
+        if department:
+            dept_lower = department.lower()
+            okr_map = {k: v for k, v in okr_map.items() 
+                    if v.get('_department', '').lower() == dept_lower}
+        
+        # Search for matching OKR
+        okr_name_lower = okr_name.lower()
+        for okr_id, okr_item in okr_map.items():
+            if okr_name_lower in okr_item['name'].lower():
+                return {'id': okr_id, **okr_item}
+        
+        return None
+    
     def _get_column_value(self, item: Dict, column_id: str) -> Optional[str]:
         """Extract a column value by ID from an item"""
         for col in item.get('column_values', []):
@@ -263,21 +290,17 @@ class PortfolioIntelligence:
         if not project:
             return None
         
-        # Get linked follow projects from board_relation9 column
-        follow_project_ids = self._parse_board_relation(project, 'board_relation9')
-        
-        # Fetch details for each follow project
+        # Follow projects are ALL subitems of the lead project
+        # (The board_relation link is often not maintained due to human error)
         follow_projects = []
-        for follow_id in follow_project_ids:
-            follow_item = self.client.get_item_by_id(follow_id)
-            if follow_item:
-                status_label, _ = self._parse_status(follow_item)
-                follow_projects.append({
-                    'id': follow_item['id'],
-                    'name': follow_item['name'],
-                    'status': status_label,
-                    'owner': self._get_column_value(follow_item, 'people') or 'Unassigned'
-                })
+        for subitem in project.get('subitems', []):
+            status_label, _ = self._parse_status(subitem)
+            follow_projects.append({
+                'id': subitem['id'],
+                'name': subitem['name'],
+                'status': status_label,
+                'owner': self._get_column_value(subitem, 'people') or 'Unassigned'
+            })
         
         return LeadFollowBreakdown(
             lead_project=project['name'],
@@ -291,13 +314,21 @@ class PortfolioIntelligence:
         Get all projects that are linked to a specific OKR
         
         Args:
-            okr_id: The Monday.com item ID of the OKR
+            okr_id: The Monday.com item ID of the OKR (Objective or Key Result)
         
         Returns:
             List of projects contributing to this OKR
         """
         all_projects = self._get_all_portfolio_items()
         okr_map = self._get_all_okr_items()
+        
+        # Get the target OKR and all its subitems (Key Results)
+        target_okr_ids = {okr_id}
+        if okr_id in okr_map:
+            target_okr = okr_map[okr_id]
+            # Add all Key Result IDs (subitems)
+            for subitem in target_okr.get('subitems', []):
+                target_okr_ids.add(subitem['id'])
         
         contributing_projects = []
         
@@ -307,8 +338,8 @@ class PortfolioIntelligence:
             for okr_col in self._get_okr_column_ids(project):
                 okr_links.extend(self._parse_board_relation(project, okr_col))
             
-            # Check if this project links to the target OKR (or its subitems)
-            if okr_id in okr_links:
+            # Check if this project links to the target OKR or any of its Key Results
+            if target_okr_ids & set(okr_links):  # Set intersection
                 status_label, status_color = self._parse_status(project)
                 
                 # Get the OKR names this project links to
