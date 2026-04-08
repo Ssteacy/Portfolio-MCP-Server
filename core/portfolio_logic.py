@@ -4,6 +4,7 @@ Core business logic for analyzing portfolio data from Monday.com
 """
 
 import json
+import os
 from typing import Dict, List, Optional
 from core.monday_client import MondayClient
 from core.models import LeadFollowBreakdown
@@ -16,16 +17,26 @@ class PortfolioIntelligence:
         self.client = MondayClient()
         self._portfolio_cache = {}
         self._okr_cache = {}
+        
+        # Column ID mappings from environment
+        self.col_owner = os.getenv('COLUMN_OWNER', 'person')
+        self.col_editor = os.getenv('COLUMN_EDITOR', 'multiple_person_mkt3t62e')
+        self.col_status = os.getenv('COLUMN_STATUS', 'status')
+        self.col_path_to_green = os.getenv('COLUMN_PATH_TO_GREEN', '18390087085__long_text_mky296ss')
+        self.col_portfolio_tier = os.getenv('COLUMN_PORTFOLIO_TIER', 'dropdown_mksq3s8t')
+        self.col_theme = os.getenv('COLUMN_THEME', 'dropdown_mm16pfa8')
+        self.col_product = os.getenv('COLUMN_PRODUCT', 'dropdown_mm1tknya')
+        self.col_target_date = os.getenv('COLUMN_TARGET_DATE', 'date4')
     
     def _get_all_portfolio_items(self, refresh: bool = False) -> List[Dict]:
         """
-        Get all portfolio items across all departments
+        Get all portfolio items across all departments with OKR links
         
         Args:
             refresh: Force refresh from API instead of using cache
         
         Returns:
-            List of all portfolio items with department metadata
+            List of all portfolio items with department metadata and parsed OKR links
         """
         if self._portfolio_cache and not refresh:
             return self._portfolio_cache
@@ -36,7 +47,8 @@ class PortfolioIntelligence:
             department = self.client.get_department_from_board_type(board_type)
             
             try:
-                items = self.client.get_board_items(board_type)
+                # Use the new optimized method with linked_items
+                items = self.client.get_portfolio_items_with_okrs(board_type)
                 
                 # Add department metadata to each item
                 for item in items:
@@ -110,7 +122,7 @@ class PortfolioIntelligence:
         if department:
             dept_lower = department.lower()
             okr_map = {k: v for k, v in okr_map.items() 
-                    if v.get('_department', '').lower() == dept_lower}
+                      if v.get('_department', '').lower() == dept_lower}
         
         # Search for matching OKR
         okr_name_lower = okr_name.lower()
@@ -141,19 +153,54 @@ class PortfolioIntelligence:
     
     def _parse_status(self, item: Dict) -> tuple[str, str]:
         """Parse status column to get label and color"""
-        status_json = self._get_column_json(item, 'status')
-        if status_json:
-            label = status_json.get('label', 'No status')
-            # Map Monday.com color indices to names
-            color_map = {0: 'gray', 1: 'green', 2: 'yellow', 3: 'red'}
-            color_index = status_json.get('index', 0)
-            color = color_map.get(color_index, 'gray')
-            return label, color
-        return 'No status', 'gray'
+        # First, find the status column to get the text
+        status_text = 'No status'
+        status_col = None
+        
+        for col in item.get('column_values', []):
+            if col['id'] == self.col_status:
+                status_col = col
+                status_text = col.get('text', 'No status')
+                break
+        
+        # Now parse the JSON for the color
+        if status_col and status_col.get('value'):
+            try:
+                status_json = json.loads(status_col['value'])
+                # Map Monday.com color indices to names
+                color_map = {0: 'gray', 1: 'green', 2: 'yellow', 3: 'red'}
+                color_index = status_json.get('index', 0)
+                color = color_map.get(color_index, 'gray')
+                return status_text, color
+            except:
+                pass
+        
+        return status_text, 'gray'
     
-    def _is_at_risk(self, status_color: str) -> bool:
-        """Determine if a project is at risk based on status color"""
-        return status_color in ['yellow', 'red']
+    def _is_at_risk(self, status_text: str) -> bool:
+        """Determine if a project is at risk based on status text"""
+        at_risk_statuses = ['Red', 'Yellow']
+        return status_text in at_risk_statuses
+    
+    def _get_okr_links_from_item(self, project: Dict) -> List[str]:
+        """
+        Extract OKR link names from a project item (uses pre-parsed okr_links)
+        
+        Args:
+            project: The Monday.com item with okr_links already parsed
+        
+        Returns:
+            List of OKR names this project links to
+        """
+        okr_links = project.get('okr_links', {})
+        
+        all_okr_names = []
+        all_okr_names.extend(okr_links.get('company_objectives', []))
+        all_okr_names.extend(okr_links.get('company_key_results', []))
+        all_okr_names.extend(okr_links.get('dept_objectives', []))
+        all_okr_names.extend(okr_links.get('dept_key_results', []))
+        
+        return all_okr_names
     
     def _parse_board_relation(self, item: Dict, column_id: str) -> List[str]:
         """
@@ -183,29 +230,6 @@ class PortfolioIntelligence:
                         pass
         
         return []
-    
-    def _get_okr_column_ids(self, project: Dict) -> List[str]:
-        """
-        Dynamically find OKR column IDs by looking for columns with 'objective' or 'key result' in the title
-        
-        Args:
-            project: The Monday.com item with column_values
-        
-        Returns:
-            List of column IDs that are OKR-related
-        """
-        okr_column_ids = []
-        
-        for col_val in project.get('column_values', []):
-            # Check if this is a board_relation column
-            if col_val.get('type') == 'board_relation':
-                col_id = col_val['id']
-                # OKR columns have IDs like 'board_relation_mkxv5m0t' and contain 'objective' or 'key result' keywords
-                # We'll check all board_relation columns
-                if col_id.startswith('board_relation'):
-                    okr_column_ids.append(col_id)
-        
-        return okr_column_ids
     
     def _find_project_by_name(self, project_name: str, items: List[Dict] = None) -> Optional[Dict]:
         """
@@ -252,10 +276,8 @@ class PortfolioIntelligence:
         
         status_label, status_color = self._parse_status(project)
         
-        # Parse OKR links (check all 4 OKR columns)
-        okr_links = []
-        for okr_col in self._get_okr_column_ids(project):
-            okr_links.extend(self._parse_board_relation(project, okr_col))
+        # Get OKR links from pre-parsed data
+        okr_names = self._get_okr_links_from_item(project)
         
         return {
             'project_name': project['name'],
@@ -263,15 +285,15 @@ class PortfolioIntelligence:
             'department': project.get('_department', 'unknown'),
             'status': status_label,
             'status_color': status_color,
-            'at_risk': self._is_at_risk(status_color),
-            'owner': self._get_column_value(project, 'people') or 'Unassigned',
-            'target_date': self._get_column_value(project, 'date4') or 'No date set',
-            'okr_aligned': len(okr_links) > 0,
-            'okr_count': len(okr_links),
-            'okr_links': okr_links,
-            'portfolio_tier': self._get_column_value(project, 'dropdown') or 'None',
-            'theme': self._get_column_value(project, 'dropdown8') or 'None',
-            'path_to_green': self._get_column_value(project, 'long_text') or 'Not documented',
+            'at_risk': self._is_at_risk(status_label),
+            'owner': self._get_column_value(project, self.col_owner) or 'Unassigned',
+            'target_date': self._get_column_value(project, self.col_target_date) or 'No date set',
+            'okr_aligned': len(okr_names) > 0,
+            'okr_count': len(okr_names),
+            'okr_names': okr_names,  # Now returns actual OKR names instead of IDs
+            'portfolio_tier': self._get_column_value(project, self.col_portfolio_tier) or 'None',
+            'theme': self._get_column_value(project, self.col_theme) or 'None',
+            'path_to_green': self._get_column_value(project, self.col_path_to_green) or 'Not documented',
             'subitem_count': len(project.get('subitems', []))
         }
     
@@ -299,12 +321,15 @@ class PortfolioIntelligence:
                 'id': subitem['id'],
                 'name': subitem['name'],
                 'status': status_label,
-                'owner': self._get_column_value(subitem, 'people') or 'Unassigned'
+                'owner': self._get_column_value(subitem, self.col_owner) or 'Unassigned',
+                'department': project.get('_department', 'unknown'),
+                'parent_project': project['name']
             })
         
         return LeadFollowBreakdown(
             lead_project=project['name'],
             lead_project_id=project['id'],
+            lead_department=project.get('_department', 'unknown'),
             follow_projects=follow_projects,
             total_follow_count=len(follow_projects)
         )
@@ -322,37 +347,29 @@ class PortfolioIntelligence:
         all_projects = self._get_all_portfolio_items()
         okr_map = self._get_all_okr_items()
         
-        # Get the target OKR and all its subitems (Key Results)
-        target_okr_ids = {okr_id}
-        if okr_id in okr_map:
-            target_okr = okr_map[okr_id]
-            # Add all Key Result IDs (subitems)
-            for subitem in target_okr.get('subitems', []):
-                target_okr_ids.add(subitem['id'])
+        # Get the target OKR name
+        target_okr = okr_map.get(okr_id)
+        if not target_okr:
+            return []
+        
+        target_okr_name = target_okr['name']
+        
+        # Also collect Key Result names if this is an Objective
+        target_okr_names = {target_okr_name}
+        for subitem in target_okr.get('subitems', []):
+            target_okr_names.add(subitem['name'])
         
         contributing_projects = []
         
         for project in all_projects:
-            # Check all 4 OKR link columns
-            okr_links = []
-            for okr_col in self._get_okr_column_ids(project):
-                okr_links.extend(self._parse_board_relation(project, okr_col))
+            # Get OKR names this project links to
+            okr_names = self._get_okr_links_from_item(project)
             
-            # Check if this project links to the target OKR or any of its Key Results
-            if target_okr_ids & set(okr_links):  # Set intersection
+            # Check if any of the project's OKR links match our target
+            matching_okrs = [name for name in okr_names if name in target_okr_names]
+            
+            if matching_okrs:
                 status_label, status_color = self._parse_status(project)
-                
-                # Get the OKR names this project links to
-                okr_names = []
-                for linked_okr_id in okr_links:
-                    if linked_okr_id in okr_map:
-                        okr_item = okr_map[linked_okr_id]
-                        if okr_item.get('_parent_okr'):
-                            # This is a Key Result
-                            okr_names.append(f"{okr_item['_parent_okr']} → {okr_item['name']}")
-                        else:
-                            # This is an Objective
-                            okr_names.append(okr_item['name'])
                 
                 contributing_projects.append({
                     'project_id': project['id'],
@@ -360,9 +377,9 @@ class PortfolioIntelligence:
                     'department': project.get('_department', 'unknown'),
                     'status': status_label,
                     'status_color': status_color,
-                    'at_risk': self._is_at_risk(status_color),
-                    'owner': self._get_column_value(project, 'people') or 'Unassigned',
-                    'okr_links': okr_names
+                    'at_risk': self._is_at_risk(status_label),
+                    'owner': self._get_column_value(project, self.col_owner) or 'Unassigned',
+                    'okr_links': matching_okrs
                 })
         
         return contributing_projects
@@ -381,11 +398,9 @@ class PortfolioIntelligence:
         for project in all_projects:
             status_label, status_color = self._parse_status(project)
             
-            if self._is_at_risk(status_color):
-                # Parse OKR links
-                okr_links = []
-                for okr_col in self._get_okr_column_ids(project):
-                    okr_links.extend(self._parse_board_relation(project, okr_col))
+            if self._is_at_risk(status_label):
+                # Get OKR names from pre-parsed data
+                okr_names = self._get_okr_links_from_item(project)
                 
                 at_risk_projects.append({
                     'id': project['id'],
@@ -393,22 +408,86 @@ class PortfolioIntelligence:
                     'department': project.get('_department', 'unknown'),
                     'status': status_label,
                     'status_color': status_color,
-                    'owner': self._get_column_value(project, 'people') or 'Unassigned',
-                    'okr_aligned': len(okr_links) > 0,
-                    'path_to_green': self._get_column_value(project, 'long_text') or 'Not documented'
+                    'owner': self._get_column_value(project, self.col_owner) or 'Unassigned',
+                    'okr_aligned': len(okr_names) > 0,
+                    'okr_names': okr_names,
+                    'path_to_green': self._get_column_value(project, self.col_path_to_green) or 'Not documented'
                 })
         
-        # TODO: Add capacity/overallocation analysis when we implement capacity board parsing
+        # Analyze capacity/overallocation
+        overallocated_people = []
+        person_capacity = {}  # {person_name: {'total': X, 'projects': [...]}}
+        
+        # Get all capacity boards
+        capacity_boards = self.client.get_all_capacity_boards()
+        
+        for board_type in capacity_boards:
+            try:
+                items = self.client.get_board_items(board_type)
+                department = board_type.replace('_capacity', '')
+                
+                for item in items:
+                    # Skip template/empty items
+                    if item['name'] == 'Portfolio Item Name':
+                        continue
+                    
+                    # Get person name
+                    person_col = next((c for c in item['column_values'] if c['id'] == 'person'), None)
+                    if not person_col or not person_col.get('text'):
+                        continue
+                    
+                    person_name = person_col['text']
+                    
+                    # Get capacity percentage
+                    capacity_col = next((c for c in item['column_values'] if c['type'] == 'numbers'), None)
+                    if not capacity_col or not capacity_col.get('text'):
+                        continue
+                    
+                    try:
+                        capacity_pct = float(capacity_col['text'])
+                    except (ValueError, TypeError):
+                        continue
+                    
+                    # Initialize person if not seen before
+                    if person_name not in person_capacity:
+                        person_capacity[person_name] = {
+                            'total': 0,
+                            'projects': [],
+                            'department': department
+                        }
+                    
+                    # Add to their total
+                    person_capacity[person_name]['total'] += capacity_pct
+                    person_capacity[person_name]['projects'].append({
+                        'name': item['name'],
+                        'capacity': capacity_pct
+                    })
+            except Exception as e:
+                print(f"⚠️  Warning: Could not load capacity board {board_type}: {e}")
+                continue
+        
+        # Find overallocated people (>70%)
+        for person_name, data in person_capacity.items():
+            if data['total'] > 70:
+                overallocated_people.append({
+                    'name': person_name,
+                    'capacity': round(data['total'], 1),
+                    'projects': [p['name'] for p in data['projects']],
+                    'department': data['department']
+                })
+        
+        # Sort by capacity (highest first)
+        overallocated_people.sort(key=lambda x: x['capacity'], reverse=True)
         
         return {
-            'total_risk_signals': len(at_risk_projects),
+            'total_risk_signals': len(at_risk_projects) + len(overallocated_people),
             'at_risk_projects': {
                 'count': len(at_risk_projects),
                 'projects': at_risk_projects
             },
             'overallocated_people': {
-                'count': 0,
-                'people': []
+                'count': len(overallocated_people),
+                'people': overallocated_people
             }
         }
     
@@ -426,13 +505,13 @@ class PortfolioIntelligence:
         board_type = f"{department}_okr"
         
         try:
-            ok_items = self.client.get_board_items(board_type)
+            okr_items = self.client.get_board_items(board_type)
         except ValueError:
             raise ValueError(f"Unknown department: {department}")
         
         okr_summary = []
         
-        for okr in ok_items:
+        for okr in okr_items:
             # Get all projects contributing to this OKR
             contributing_projects = self.get_okr_contributing_projects(okr['id'])
             
@@ -473,10 +552,8 @@ class PortfolioIntelligence:
         for project in all_projects:
             status_label, status_color = self._parse_status(project)
             
-            # Calculate OKR alignment
-            okr_links = []
-            for okr_col in self._get_okr_column_ids(project):
-                okr_links.extend(self._parse_board_relation(project, okr_col))
+            # Get OKR names from pre-parsed data
+            okr_names = self._get_okr_links_from_item(project)
             
             result.append({
                 'project_id': project['id'],
@@ -484,13 +561,13 @@ class PortfolioIntelligence:
                 'department': project.get('_department', 'unknown'),
                 'status': status_label,
                 'status_color': status_color,
-                'at_risk': self._is_at_risk(status_color),
-                'owner': self._get_column_value(project, 'people') or 'Unassigned',
-                'target_date': self._get_column_value(project, 'date4') or 'No date set',
-                'portfolio_tier': self._get_column_value(project, 'dropdown') or 'None',
-                'theme': self._get_column_value(project, 'dropdown8') or 'None',
-                'okr_aligned': len(okr_links) > 0,
-                'okr_count': len(okr_links)
+                'at_risk': self._is_at_risk(status_label),
+                'owner': self._get_column_value(project, self.col_owner) or 'Unassigned',
+                'target_date': self._get_column_value(project, self.col_target_date) or 'No date set',
+                'portfolio_tier': self._get_column_value(project, self.col_portfolio_tier) or 'None',
+                'theme': self._get_column_value(project, self.col_theme) or 'None',
+                'okr_aligned': len(okr_names) > 0,
+                'okr_count': len(okr_names)
             })
         
         return result

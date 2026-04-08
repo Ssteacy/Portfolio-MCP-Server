@@ -1,72 +1,84 @@
 #!/usr/bin/env python3
-"""
-Debug ALL columns to find board relations
-"""
+"""Debug script to see actual column data"""
 
 import sys
+import json
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent))
+
+# Add the project to path
+project_path = Path('/Users/ssteacy/monday-portfolio-mcp')
+sys.path.insert(0, str(project_path))
 
 from core.portfolio_logic import PortfolioIntelligence
-import json
 
+pi = PortfolioIntelligence()
 
-def debug_all_columns():
-    """Show ALL columns for first project"""
-    pi = PortfolioIntelligence()
+# Find the project
+project = pi._find_project_by_name("OpsCloud Pricing & Packaging")
+
+if project:
+    print(f"Found project: {project['name']}")
+    print(f"Department: {project.get('_department')}")
+    print(f"\nColumn Values:")
+    print("=" * 80)
     
-    items = pi.client.get_board_items('portfolio')
-    
-    print("=" * 70)
-    print("🔍 DEBUGGING ALL COLUMNS - FIRST PROJECT")
-    print("=" * 70)
-    
-    if items:
-        first_item = items[0]
-        print(f"\n📊 Project: {first_item['name']}\n")
+    for col in project.get('column_values', []):
+        print(f"\nColumn ID: {col['id']}")
+        print(f"Type: {col.get('type', 'N/A')}")
+        print(f"Text: {col.get('text', 'N/A')}")
         
-        print("ALL COLUMNS (showing everything):")
-        print("-" * 70)
-        
-        for col in first_item['column_values']:
-            print(f"\nColumn ID: {col['id']}")
-            print(f"Type: {col['type']}")
-            print(f"Text: '{col.get('text', '')}'")
-            
-            value = col.get('value', '')
-            if value:
-                if len(value) < 200:
-                    print(f"Value: {value}")
-                else:
-                    print(f"Value: {value[:200]}... (truncated)")
-            else:
-                print(f"Value: (empty)")
-        
-        print("\n" + "=" * 70)
-        print("🔍 BOARD_RELATION TYPE COLUMNS")
-        print("=" * 70)
-        
-        board_relation_cols = [col for col in first_item['column_values'] 
-                               if col['type'] == 'board_relation']
-        
-        if board_relation_cols:
-            print(f"\nFound {len(board_relation_cols)} board_relation columns:\n")
-            for col in board_relation_cols:
-                print(f"  Column ID: {col['id']}")
-                print(f"  Text: '{col.get('text', '')}'")
-                print(f"  Value: '{col.get('value', '')}'")
-                print()
+        # Try to parse value JSON
+        value_str = col.get('value')
+        if value_str:
+            try:
+                value_json = json.loads(value_str)
+                print(f"Value JSON: {json.dumps(value_json, indent=2)}")
+            except:
+                print(f"Value (raw): {value_str}")
         else:
-            print("\n❌ NO board_relation columns found!")
-            print("The GraphQL query might not be returning this data.")
-    
-    print("\n" + "=" * 70)
-    print("📋 ALL PORTFOLIO PROJECTS")
-    print("=" * 70)
-    
-    for i, item in enumerate(items, 1):
-        print(f"{i}. {item['name']}")
+            print("Value: None")
+        print("-" * 80)
+else:
+    print("Project not found!")
+#!/usr/bin/env python3
+"""Debug script to see actual column data"""
 
+import sys
+import json
+from pathlib import Path
 
-if __name__ == "__main__":
-    debug_all_columns()
+# Add the project to path
+project_path = Path('/Users/ssteacy/monday-portfolio-mcp')
+sys.path.insert(0, str(project_path))
+
+from core.portfolio_logic import PortfolioIntelligence
+
+pi = PortfolioIntelligence()
+
+# Find the project
+project = pi._find_project_by_name("OpsCloud Pricing & Packaging")
+
+if project:
+    print(f"Found project: {project['name']}")
+    print(f"Department: {project.get('_department')}")
+    print(f"\nColumn Values:")
+    print("=" * 80)
+    
+    for col in project.get('column_values', []):
+        print(f"\nColumn ID: {col['id']}")
+        print(f"Type: {col.get('type', 'N/A')}")
+        print(f"Text: {col.get('text', 'N/A')}")
+        
+        # Try to parse value JSON
+        value_str = col.get('value')
+        if value_str:
+            try:
+                value_json = json.loads(value_str)
+                print(f"Value JSON: {json.dumps(value_json, indent=2)}")
+            except:
+                print(f"Value (raw): {value_str}")
+        else:
+            print("Value: None")
+        print("-" * 80)
+else:
+    print("Project not found!")

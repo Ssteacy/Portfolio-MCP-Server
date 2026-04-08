@@ -100,8 +100,9 @@ class CapacityAllocation:
 
 @dataclass
 class LeadFollowBreakdown:
-    """Breakdown of lead vs follow projects"""
+    """Lead/Follow project breakdown"""
     lead_project: str
     lead_project_id: str
-    follow_projects: List[Dict[str, str]]  # List of {id, name, owner, status}
+    lead_department: str  
+    follow_projects: List[Dict]
     total_follow_count: int

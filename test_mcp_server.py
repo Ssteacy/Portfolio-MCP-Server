@@ -23,7 +23,8 @@ def test_all_capabilities():
     print("-" * 70)
     status = pi.get_project_status("OpsCloud Pricing & Packaging")
     if status:
-        print(f"✅ Project: {status['project_name']}")
+        dept = status.get('department', 'unknown').upper()
+        print(f"✅ Project: {status['project_name']} [{dept}]")
         print(f"   Status: {status['status']} ({status['status_color']})")
         print(f"   At Risk: {status['at_risk']}")
         print(f"   Owner: {status['owner']}")
@@ -37,10 +38,12 @@ def test_all_capabilities():
     print("-" * 70)
     breakdown = pi.get_lead_follow_breakdown("OpsCloud Pricing & Packaging")
     if breakdown:
-        print(f"✅ Lead Project: {breakdown.lead_project}")
+        dept = breakdown.lead_department.upper()
+        print(f"✅ Lead Project: {breakdown.lead_project} [{dept}]")
         print(f"   Follow Projects: {breakdown.total_follow_count}")
         for follow in breakdown.follow_projects[:5]:
-            print(f"   - {follow['name']} ({follow['status']})")
+            follow_dept = follow.get('department', 'unknown').upper()
+            print(f"   - {follow['name']} ({follow['status']}) [{follow_dept}]")
     else:
         print("❌ Project not found")
     
@@ -73,7 +76,8 @@ def test_all_capabilities():
             print(f"\n   Top Contributing Projects:")
             for proj in projects[:5]:
                 risk_icon = "⚠️ " if proj.get('at_risk', False) else "✅"
-                print(f"   {risk_icon} {proj['project_name']} ({proj.get('status', 'N/A')})")
+                dept = proj.get('department', 'unknown').upper()
+                print(f"   {risk_icon} {proj['project_name']} ({proj.get('status', 'N/A')}) [{dept}]")
                 if proj.get('okr_links'):
                     okr_link_preview = proj['okr_links'][0] if len(proj['okr_links']) > 0 else 'N/A'
                     print(f"      Link: {okr_link_preview}")
@@ -92,7 +96,8 @@ def test_all_capabilities():
     
     print(f"\n   Top 5 At-Risk Projects:")
     for project in risks['at_risk_projects']['projects'][:5]:
-        print(f"   ⚠️  {project['name']} ({project['status']}) - {project['owner']}")
+        dept = project.get('department', 'unknown').upper()
+        print(f"   ⚠️  {project['name']} ({project['status']}) [{dept}] - {project['owner']}")
     
     # TEST 5: Department OKR Progress
     print("\n📊 TEST 5: Department OKR Progress")
@@ -109,7 +114,8 @@ def test_all_capabilities():
         if okr.get('projects') and len(okr['projects']) > 0:
             for proj in okr['projects'][:3]:
                 risk_icon = "⚠️" if proj.get('at_risk', False) else "✅"
-                print(f"       {risk_icon} {proj['project_name']} ({proj.get('status', 'N/A')})")
+                dept = proj.get('department', 'unknown').upper()
+                print(f"       {risk_icon} {proj['project_name']} ({proj.get('status', 'N/A')}) [{dept}]")
     
     print("\n" + "=" * 70)
     print("✅ ALL TESTS COMPLETE - MCP SERVER READY!")

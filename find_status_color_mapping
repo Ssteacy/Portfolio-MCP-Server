@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent))
+
+from core.portfolio_logic import PortfolioIntelligence
+import json
+
+pi = PortfolioIntelligence()
+all_items = pi._get_all_portfolio_items()
+
+status_map = {}
+
+for item in all_items:
+    for col in item.get('column_values', []):
+        if col['id'] == 'status' and col.get('value'):
+            text = col.get('text', 'Unknown')
+            try:
+                value_json = json.loads(col['value'])
+                index = value_json.get('index')
+                if index is not None:
+                    status_map[index] = text
+            except:
+                pass
+
+print("Status Index Mapping:")
+for index in sorted(status_map.keys()):
+    print(f"  {index}: {status_map[index]}")
