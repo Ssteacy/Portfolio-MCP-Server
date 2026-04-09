@@ -9,598 +9,680 @@ from typing import Dict, List, Optional
 from core.monday_client import MondayClient
 from core.models import LeadFollowBreakdown
 
+import time
+from typing import Dict, List, Optional, Any
+from datetime import datetime
 
-class PortfolioIntelligence:
-    """Main class for portfolio analysis and intelligence"""
+# Global in-memory cache
+_CACHE = {
+    'portfolios': {},  # {department: {board_id, items, last_refresh}}
+    'okrs': {},        # {department: {board_id, objectives, key_results, last_refresh}}
+    'metadata': {
+        'cache_created': None,
+        'ttl_seconds': 600,  # 10 minutes
+        'total_portfolios': 0,
+        'total_okrs': 0
+    }
+}
+
+def _is_cache_valid() -> bool:
+    """Check if cache exists and is within TTL"""
+    if not _CACHE['metadata']['cache_created']:
+        return False
+    
+    elapsed = time.time() - _CACHE['metadata']['cache_created']
+    return elapsed < _CACHE['metadata']['ttl_seconds']
+
+def _ensure_cache_fresh(monday_client) -> None:
+    """
+    Ensure cache is loaded and fresh.
+    Refreshes if cache is stale or empty.
+    """
+    if not _is_cache_valid():
+        _refresh_cache(monday_client)
+
+def _refresh_cache(monday_client) -> Dict:
+    """
+    Fetch ALL portfolio and OKR data for all 8 boards
+    This is the ONLY method that calls the Monday API
+    """
+    print("🔄 Refreshing cache...")
+    start_time = time.time()
+    
+    # Portfolio board types
+    portfolio_types = [
+        'company_portfolio',
+        'proddev_portfolio',
+        'secit_portfolio',
+        'finops_portfolio',
+        'field_portfolio',
+        'people_portfolio',
+        'marketing_portfolio',
+        'legal_portfolio'
+    ]
+
+    # OKR board types
+    okr_types = [
+        'company_okr',
+        'proddev_okr',
+        'secit_okr',
+        'finops_okr',
+        'field_okr',
+        'people_okr',
+        'marketing_okr',
+        'legal_okr'
+    ]
+    
+    # Fetch all portfolios
+    total_portfolio_items = 0
+    total_portfolio_subitems = 0
+    for board_type in portfolio_types:
+        try:
+            data = monday_client.get_complete_portfolio_data(board_type)
+            department = data['department']
+            _CACHE['portfolios'][department] = {
+                'board_id': data['board_id'],
+                'board_name': data['board_name'],
+                'items': data['items'],
+                'total_items': data['total_items'],
+                'total_subitems': data['total_subitems'],
+                'last_refresh': time.time()
+            }
+            total_portfolio_items += data['total_items']
+            total_portfolio_subitems += data['total_subitems']
+            print(f"  ✅ {department}: {data['total_items']} items, {data['total_subitems']} subitems")
+        except Exception as e:
+            print(f"  ❌ Failed to fetch {board_type}: {e}")
+            # Continue with other boards even if one fails
+    
+    # Fetch all OKRs
+    total_objectives = 0
+    total_key_results = 0
+    for board_type in okr_types:
+        try:
+            data = monday_client.get_complete_okr_data(board_type)
+            department = data['department']
+            _CACHE['okrs'][department] = {
+                'board_id': data['board_id'],
+                'board_name': data['board_name'],
+                'objectives': data['objectives'],
+                'key_results': data['key_results'],
+                'total_objectives': data['total_objectives'],
+                'total_key_results': data['total_key_results'],
+                'last_refresh': time.time()
+            }
+            total_objectives += data['total_objectives']
+            total_key_results += data['total_key_results']
+            print(f"  ✅ {department} OKRs: {data['total_objectives']} objectives, {data['total_key_results']} key results")
+        except Exception as e:
+            print(f"  ❌ Failed to fetch {board_type}: {e}")
+    
+    # Update metadata
+    _CACHE['metadata']['cache_created'] = time.time()
+    _CACHE['metadata']['total_portfolios'] = len(_CACHE['portfolios'])
+    _CACHE['metadata']['total_okrs'] = len(_CACHE['okrs'])
+    
+    elapsed = time.time() - start_time
+    print(f"✅ Cache refreshed in {elapsed:.2f}s")
+    print(f"   📊 Total: {total_portfolio_items} projects, {total_portfolio_subitems} subitems, {total_objectives} objectives, {total_key_results} key results")
+    
+    return _CACHE
+
+def get_cached_data(monday_client) -> Dict:
+    """
+    Get cached data, refreshing if necessary
+    This is the entry point for all tools
+    """
+    if not _is_cache_valid():
+        _refresh_cache(monday_client)
+    
+    return _CACHE
+
+class PortfolioLogic:
+    """Main class for portfolio analysis using cached data"""
     
     def __init__(self):
         self.client = MondayClient()
-        self._portfolio_cache = {}
-        self._okr_cache = {}
-        
-        # Column ID mappings from environment
-        self.col_owner = os.getenv('COLUMN_OWNER', 'person')
-        self.col_editor = os.getenv('COLUMN_EDITOR', 'multiple_person_mkt3t62e')
-        self.col_status = os.getenv('COLUMN_STATUS', 'status')
-        self.col_path_to_green = os.getenv('COLUMN_PATH_TO_GREEN', '18390087085__long_text_mky296ss')
-        self.col_portfolio_tier = os.getenv('COLUMN_PORTFOLIO_TIER', 'dropdown_mksq3s8t')
-        self.col_theme = os.getenv('COLUMN_THEME', 'dropdown_mm16pfa8')
-        self.col_product = os.getenv('COLUMN_PRODUCT', 'dropdown_mm1tknya')
-        self.col_target_date = os.getenv('COLUMN_TARGET_DATE', 'date4')
     
-    def _get_all_portfolio_items(self, refresh: bool = False) -> List[Dict]:
-        """
-        Get all portfolio items across all departments with OKR links
-        
-        Args:
-            refresh: Force refresh from API instead of using cache
-        
-        Returns:
-            List of all portfolio items with department metadata and parsed OKR links
-        """
-        if self._portfolio_cache and not refresh:
-            return self._portfolio_cache
-        
-        all_items = []
-        
-        for board_type in self.client.get_all_portfolio_boards():
-            department = self.client.get_department_from_board_type(board_type)
-            
-            try:
-                # Use the new optimized method with linked_items
-                items = self.client.get_portfolio_items_with_okrs(board_type)
-                
-                # Add department metadata to each item
-                for item in items:
-                    item['_department'] = department
-                    item['_board_type'] = board_type
-                
-                all_items.extend(items)
-                print(f"✅ Loaded {len(items)} items from {department} portfolio")
-            
-            except Exception as e:
-                print(f"⚠️  Warning: Could not load {board_type}: {e}")
-                continue
-        
-        self._portfolio_cache = all_items
-        return all_items
+    def _get_cache(self) -> Dict:
+        """Get cached data (refreshes if needed)"""
+        return get_cached_data(self.client)
     
-    def _get_all_okr_items(self, refresh: bool = False) -> Dict[str, Dict]:
-        """
-        Get all OKR items across all departments, structured as a lookup map
-        
-        Returns:
-            Dict mapping item_id -> {item data with objectives and key results}
-        """
-        if self._okr_cache and not refresh:
-            return self._okr_cache
-        
-        okr_map = {}
-        
-        for board_type in self.client.get_all_okr_boards():
-            department = self.client.get_department_from_board_type(board_type)
-            
-            try:
-                items = self.client.get_board_items(board_type)
-                
-                for item in items:
-                    item['_department'] = department
-                    item['_board_type'] = board_type
-                    okr_map[item['id']] = item
-                    
-                    # Also add subitems (Key Results) to the map
-                    if item.get('subitems'):
-                        for subitem in item['subitems']:
-                            subitem['_parent_okr'] = item['name']
-                            subitem['_department'] = department
-                            subitem['_board_type'] = board_type
-                            okr_map[subitem['id']] = subitem
-                
-                print(f"✅ Loaded {len(items)} OKRs from {department}")
-            
-            except Exception as e:
-                print(f"⚠️  Warning: Could not load {board_type}: {e}")
-                continue
-        
-        self._okr_cache = okr_map
-        return okr_map
-    
-    def find_okr_by_name(self, okr_name: str, department: Optional[str] = None) -> Optional[Dict]:
-        """
-        Find an OKR by name (partial match) across all OKR boards
-        
-        Args:
-            okr_name: OKR name to search for (partial match)
-            department: Optional department filter
-        
-        Returns:
-            Matching OKR item or None
-        """
-        okr_map = self._get_all_okr_items()
-        
-        # Filter by department if specified
-        if department:
-            dept_lower = department.lower()
-            okr_map = {k: v for k, v in okr_map.items() 
-                      if v.get('_department', '').lower() == dept_lower}
-        
-        # Search for matching OKR
-        okr_name_lower = okr_name.lower()
-        for okr_id, okr_item in okr_map.items():
-            if okr_name_lower in okr_item['name'].lower():
-                return {'id': okr_id, **okr_item}
-        
+    def _get_column_value(self, column_values: List[Dict], column_id: str) -> Optional[str]:
+        """Extract column value by ID"""
+        for col in column_values:
+            if col['id'] == column_id:
+                return col.get('text') or col.get('value')
         return None
     
-    def _get_column_value(self, item: Dict, column_id: str) -> Optional[str]:
-        """Extract a column value by ID from an item"""
-        for col in item.get('column_values', []):
-            if col['id'] == column_id:
-                return col.get('text', '')
-        return None
+    def _parse_status(self, column_values: List[Dict]) -> str:
+        """Parse status column"""
+        status_text = self._get_column_value(column_values, 'status')
+        return status_text if status_text else 'Not Set'
     
-    def _get_column_json(self, item: Dict, column_id: str) -> Optional[Dict]:
-        """Extract a column's JSON value by ID"""
-        for col in item.get('column_values', []):
-            if col['id'] == column_id:
-                value_str = col.get('value')
-                if value_str:
+    def _parse_owner(self, column_values: List[Dict]) -> str:
+        """Parse owner column"""
+        owner_text = self._get_column_value(column_values, 'person')
+        return owner_text if owner_text else 'Unassigned'
+    
+    def _get_okr_links(self, column_values: List[Dict]) -> set:
+        """
+        Extract all OKR item IDs from OKR link columns
+        
+        Returns:
+            Set of linked OKR item IDs
+        """
+        okr_ids = set()
+        
+        # OKR link column IDs (adjust these to match your actual column IDs)
+        okr_columns = [
+            'board_relation__1',  # Company Objectives
+            'board_relation0__1', # Company Key Results
+            'board_relation1__1', # Department Objectives
+            'board_relation2__1'  # Department Key Results
+        ]
+        
+        for col in column_values:
+            if col['id'] in okr_columns:
+                # Parse linked_items from the column
+                value = col.get('value')
+                if value:
                     try:
-                        return json.loads(value_str)
-                    except json.JSONDecodeError:
-                        return None
-        return None
-    
-    def _parse_status(self, item: Dict) -> tuple[str, str]:
-        """Parse status column to get label and color"""
-        # First, find the status column to get the text
-        status_text = 'No status'
-        status_col = None
-        
-        for col in item.get('column_values', []):
-            if col['id'] == self.col_status:
-                status_col = col
-                status_text = col.get('text', 'No status')
-                break
-        
-        # Now parse the JSON for the color
-        if status_col and status_col.get('value'):
-            try:
-                status_json = json.loads(status_col['value'])
-                # Map Monday.com color indices to names
-                color_map = {0: 'gray', 1: 'green', 2: 'yellow', 3: 'red'}
-                color_index = status_json.get('index', 0)
-                color = color_map.get(color_index, 'gray')
-                return status_text, color
-            except:
-                pass
-        
-        return status_text, 'gray'
-    
-    def _is_at_risk(self, status_text: str) -> bool:
-        """Determine if a project is at risk based on status text"""
-        at_risk_statuses = ['Red', 'Yellow']
-        return status_text in at_risk_statuses
-    
-    def _get_okr_links_from_item(self, project: Dict) -> List[str]:
-        """
-        Extract OKR link names from a project item (uses pre-parsed okr_links)
-        
-        Args:
-            project: The Monday.com item with okr_links already parsed
-        
-        Returns:
-            List of OKR names this project links to
-        """
-        okr_links = project.get('okr_links', {})
-        
-        all_okr_names = []
-        all_okr_names.extend(okr_links.get('company_objectives', []))
-        all_okr_names.extend(okr_links.get('company_key_results', []))
-        all_okr_names.extend(okr_links.get('dept_objectives', []))
-        all_okr_names.extend(okr_links.get('dept_key_results', []))
-        
-        return all_okr_names
-    
-    def _parse_board_relation(self, item: Dict, column_id: str) -> List[str]:
-        """
-        Parse board relation column to extract linked item IDs
-        
-        Args:
-            item: The Monday.com item
-            column_id: The column ID to parse
-        
-        Returns:
-            List of linked item IDs
-        """
-        for col in item.get('column_values', []):
-            if col['id'] == column_id:
-                # Check for linked_item_ids (new approach)
-                if 'linked_item_ids' in col and col['linked_item_ids']:
-                    return col['linked_item_ids']
-                
-                # Fallback to parsing value JSON
-                value_str = col.get('value')
-                if value_str:
-                    try:
-                        value_json = json.loads(value_str)
-                        if 'linkedPulseIds' in value_json:
-                            return [str(pid) for pid in value_json['linkedPulseIds']]
-                    except json.JSONDecodeError:
+                        parsed = json.loads(value) if isinstance(value, str) else value
+                        if isinstance(parsed, dict) and 'linkedPulseIds' in parsed:
+                            for linked_id in parsed['linkedPulseIds']:
+                                okr_ids.add(str(linked_id['linkedPulseId']))
+                    except:
                         pass
         
+        return okr_ids
+    
+    def _parse_path_to_green(self, column_values: List[Dict]) -> str:
+        """Parse path to green column"""
+        ptg = self._get_column_value(column_values, '18390087085__long_text_mky296ss')
+        return ptg if ptg else 'Not provided'
+    
+    def _parse_okr_links(self, column_values: List[Dict]) -> List[str]:
+        """Parse OKR links from board_relation column"""
+        for col in column_values:
+            if col['type'] == 'board_relation' and col['id'] == 'board_relation_mkxvdkje':
+                value = col.get('value')
+                if value:
+                    try:
+                        data = json.loads(value)
+                        linked_items = data.get('linkedPulseIds', [])
+                        if linked_items:
+                            # Get OKR names from cache
+                            cache = self._get_cache()
+                            okr_names = []
+                            for dept_data in cache['okrs'].values():
+                                for obj in dept_data['objectives']:
+                                    if int(obj['id']) in [int(x['linkedPulseId']) for x in linked_items]:
+                                        okr_names.append(obj['name'])
+                                for kr in dept_data['key_results']:
+                                    if int(kr['id']) in [int(x['linkedPulseId']) for x in linked_items]:
+                                        okr_names.append(kr['name'])
+                            return okr_names
+                    except:
+                        pass
         return []
     
-    def _find_project_by_name(self, project_name: str, items: List[Dict] = None) -> Optional[Dict]:
-        """
-        Find a project by name (supports partial matching)
-        
-        Args:
-            project_name: Name or partial name of the project
-            items: Optional list of items to search (defaults to all portfolio items)
-        
-        Returns:
-            Matching project item or None
-        """
-        if items is None:
-            items = self._get_all_portfolio_items()
-        
-        project_name_lower = project_name.lower()
-        
-        # First try exact match
-        for item in items:
-            if item['name'].lower() == project_name_lower:
-                return item
-        
-        # Then try partial match
-        for item in items:
-            if project_name_lower in item['name'].lower():
-                return item
-        
+    def _is_milestone(self, subitem: Dict) -> bool:
+        """Check if subitem is a milestone"""
+        for col in subitem.get('column_values', []):
+            if col['id'] == 'checkbox' and col['type'] == 'boolean':
+                value = col.get('value')
+                if value:
+                    try:
+                        data = json.loads(value)
+                        return data.get('checked') == True
+                    except:
+                        pass
+        return False
+    
+    def _get_contributing_project_link(self, subitem: Dict) -> Optional[str]:
+        """Get contributing project link from board_relation column"""
+        for col in subitem.get('column_values', []):
+            if col['type'] == 'board_relation' and col['id'] == 'board_relation':
+                value = col.get('value')
+                if value:
+                    try:
+                        data = json.loads(value)
+                        linked_items = data.get('linkedPulseIds', [])
+                        if linked_items:
+                            # Get project name from cache
+                            cache = self._get_cache()
+                            for dept_data in cache['portfolios'].values():
+                                for item in dept_data['items']:
+                                    if int(item['id']) == int(linked_items[0]['linkedPulseId']):
+                                        return item['name']
+                    except:
+                        pass
         return None
     
-    def get_project_status(self, project_name: str) -> Optional[Dict]:
+    def get_portfolio_summary(self, department: Optional[str] = None) -> Dict:
         """
-        Get detailed status information for a specific project
+        Get portfolio summary from cache
         
         Args:
-            project_name: Name of the project (supports partial matching)
+            department: Optional department filter (e.g., 'proddev', 'secit')
         
         Returns:
-            Dictionary with project status details or None if not found
+            Dict with portfolio summary
         """
-        project = self._find_project_by_name(project_name)
+        cache = self._get_cache()
         
-        if not project:
-            return None
-        
-        status_label, status_color = self._parse_status(project)
-        
-        # Get OKR links from pre-parsed data
-        okr_names = self._get_okr_links_from_item(project)
-        
-        return {
-            'project_name': project['name'],
-            'project_id': project['id'],
-            'department': project.get('_department', 'unknown'),
-            'status': status_label,
-            'status_color': status_color,
-            'at_risk': self._is_at_risk(status_label),
-            'owner': self._get_column_value(project, self.col_owner) or 'Unassigned',
-            'target_date': self._get_column_value(project, self.col_target_date) or 'No date set',
-            'okr_aligned': len(okr_names) > 0,
-            'okr_count': len(okr_names),
-            'okr_names': okr_names,  # Now returns actual OKR names instead of IDs
-            'portfolio_tier': self._get_column_value(project, self.col_portfolio_tier) or 'None',
-            'theme': self._get_column_value(project, self.col_theme) or 'None',
-            'path_to_green': self._get_column_value(project, self.col_path_to_green) or 'Not documented',
-            'subitem_count': len(project.get('subitems', []))
-        }
-    
-    def get_lead_follow_breakdown(self, project_name: str) -> Optional[LeadFollowBreakdown]:
-        """
-        Get the lead/follow project breakdown for a specific project
-        
-        Args:
-            project_name: Name of the lead project
-        
-        Returns:
-            LeadFollowBreakdown object or None if project not found
-        """
-        project = self._find_project_by_name(project_name)
-        
-        if not project:
-            return None
-        
-        # Follow projects are ALL subitems of the lead project
-        # (The board_relation link is often not maintained due to human error)
-        follow_projects = []
-        for subitem in project.get('subitems', []):
-            status_label, _ = self._parse_status(subitem)
-            follow_projects.append({
-                'id': subitem['id'],
-                'name': subitem['name'],
-                'status': status_label,
-                'owner': self._get_column_value(subitem, self.col_owner) or 'Unassigned',
-                'department': project.get('_department', 'unknown'),
-                'parent_project': project['name']
-            })
-        
-        return LeadFollowBreakdown(
-            lead_project=project['name'],
-            lead_project_id=project['id'],
-            lead_department=project.get('_department', 'unknown'),
-            follow_projects=follow_projects,
-            total_follow_count=len(follow_projects)
-        )
-    
-    def get_okr_contributing_projects(self, okr_id: str) -> List[Dict]:
-        """
-        Get all projects that are linked to a specific OKR
-        
-        Args:
-            okr_id: The Monday.com item ID of the OKR (Objective or Key Result)
-        
-        Returns:
-            List of projects contributing to this OKR
-        """
-        all_projects = self._get_all_portfolio_items()
-        okr_map = self._get_all_okr_items()
-        
-        # Get the target OKR name
-        target_okr = okr_map.get(okr_id)
-        if not target_okr:
-            return []
-        
-        target_okr_name = target_okr['name']
-        
-        # Also collect Key Result names if this is an Objective
-        target_okr_names = {target_okr_name}
-        for subitem in target_okr.get('subitems', []):
-            target_okr_names.add(subitem['name'])
-        
-        contributing_projects = []
-        
-        for project in all_projects:
-            # Get OKR names this project links to
-            okr_names = self._get_okr_links_from_item(project)
+        if department:
+            dept_lower = department.lower()
+            if dept_lower not in cache['portfolios']:
+                return {
+                    'error': f"Department '{department}' not found",
+                    'available_departments': list(cache['portfolios'].keys())
+                }
             
-            # Check if any of the project's OKR links match our target
-            matching_okrs = [name for name in okr_names if name in target_okr_names]
-            
-            if matching_okrs:
-                status_label, status_color = self._parse_status(project)
-                
-                contributing_projects.append({
-                    'project_id': project['id'],
-                    'project_name': project['name'],
-                    'department': project.get('_department', 'unknown'),
-                    'status': status_label,
-                    'status_color': status_color,
-                    'at_risk': self._is_at_risk(status_label),
-                    'owner': self._get_column_value(project, self.col_owner) or 'Unassigned',
-                    'okr_links': matching_okrs
-                })
-        
-        return contributing_projects
-    
-    def identify_risks(self) -> Dict:
-        """
-        Identify all risk signals across the entire portfolio
-        
-        Returns:
-            Dictionary with categorized risk information
-        """
-        all_projects = self._get_all_portfolio_items()
-        
-        at_risk_projects = []
-        
-        for project in all_projects:
-            status_label, status_color = self._parse_status(project)
-            
-            if self._is_at_risk(status_label):
-                # Get OKR names from pre-parsed data
-                okr_names = self._get_okr_links_from_item(project)
-                
-                at_risk_projects.append({
-                    'id': project['id'],
-                    'name': project['name'],
-                    'department': project.get('_department', 'unknown'),
-                    'status': status_label,
-                    'status_color': status_color,
-                    'owner': self._get_column_value(project, self.col_owner) or 'Unassigned',
-                    'okr_aligned': len(okr_names) > 0,
-                    'okr_names': okr_names,
-                    'path_to_green': self._get_column_value(project, self.col_path_to_green) or 'Not documented'
-                })
-        
-        # Analyze capacity/overallocation
-        overallocated_people = []
-        person_capacity = {}  # {person_name: {'total': X, 'projects': [...]}}
-        
-        # Get all capacity boards
-        capacity_boards = self.client.get_all_capacity_boards()
-        
-        for board_type in capacity_boards:
-            try:
-                items = self.client.get_board_items(board_type)
-                department = board_type.replace('_capacity', '')
-                
-                for item in items:
-                    # Skip template/empty items
-                    if item['name'] == 'Portfolio Item Name':
-                        continue
-                    
-                    # Get person name
-                    person_col = next((c for c in item['column_values'] if c['id'] == 'person'), None)
-                    if not person_col or not person_col.get('text'):
-                        continue
-                    
-                    person_name = person_col['text']
-                    
-                    # Get capacity percentage
-                    capacity_col = next((c for c in item['column_values'] if c['type'] == 'numbers'), None)
-                    if not capacity_col or not capacity_col.get('text'):
-                        continue
-                    
-                    try:
-                        capacity_pct = float(capacity_col['text'])
-                    except (ValueError, TypeError):
-                        continue
-                    
-                    # Initialize person if not seen before
-                    if person_name not in person_capacity:
-                        person_capacity[person_name] = {
-                            'total': 0,
-                            'projects': [],
-                            'department': department
-                        }
-                    
-                    # Add to their total
-                    person_capacity[person_name]['total'] += capacity_pct
-                    person_capacity[person_name]['projects'].append({
-                        'name': item['name'],
-                        'capacity': capacity_pct
-                    })
-            except Exception as e:
-                print(f"⚠️  Warning: Could not load capacity board {board_type}: {e}")
-                continue
-        
-        # Find overallocated people (>70%)
-        for person_name, data in person_capacity.items():
-            if data['total'] > 70:
-                overallocated_people.append({
-                    'name': person_name,
-                    'capacity': round(data['total'], 1),
-                    'projects': [p['name'] for p in data['projects']],
-                    'department': data['department']
-                })
-        
-        # Sort by capacity (highest first)
-        overallocated_people.sort(key=lambda x: x['capacity'], reverse=True)
-        
-        return {
-            'total_risk_signals': len(at_risk_projects) + len(overallocated_people),
-            'at_risk_projects': {
-                'count': len(at_risk_projects),
-                'projects': at_risk_projects
-            },
-            'overallocated_people': {
-                'count': len(overallocated_people),
-                'people': overallocated_people
+            dept_data = cache['portfolios'][dept_lower]
+            return {
+                'department': dept_lower,
+                'board_name': dept_data['board_name'],
+                'total_projects': dept_data['total_items'],
+                'total_subitems': dept_data['total_subitems'],
+                'status_breakdown': self._get_status_breakdown(dept_data['items']),
+                'tier_breakdown': self._get_tier_breakdown(dept_data['items'])
             }
-        }
+        else:
+            # All portfolios
+            total_projects = sum(d['total_items'] for d in cache['portfolios'].values())
+            total_subitems = sum(d['total_subitems'] for d in cache['portfolios'].values())
+            
+            all_items = []
+            for dept_data in cache['portfolios'].values():
+                all_items.extend(dept_data['items'])
+            
+            return {
+                'total_portfolios': cache['metadata']['total_portfolios'],
+                'total_projects': total_projects,
+                'total_subitems': total_subitems,
+                'departments': list(cache['portfolios'].keys()),
+                'status_breakdown': self._get_status_breakdown(all_items),
+                'tier_breakdown': self._get_tier_breakdown(all_items)
+            }
     
-    def get_department_okr_progress(self, department: str = 'proddev') -> List[Dict]:
+    def _get_status_breakdown(self, items: List[Dict]) -> Dict[str, int]:
+        """Get status breakdown from items"""
+        breakdown = {}
+        for item in items:
+            status = self._parse_status(item['column_values'])
+            breakdown[status] = breakdown.get(status, 0) + 1
+        return breakdown
+    
+    def _get_tier_breakdown(self, items: List[Dict]) -> Dict[str, int]:
+        """Get tier breakdown from items"""
+        breakdown = {}
+        for item in items:
+            tier = self._get_column_value(item['column_values'], 'dropdown_mksq3s8t')
+            tier = tier if tier else 'Not Set'
+            breakdown[tier] = breakdown.get(tier, 0) + 1
+        return breakdown
+    
+    def get_project_details(self, project_name: str, department: Optional[str] = None) -> Dict:
         """
-        Get OKR progress summary for a specific department
+        Get detailed project information from cache
         
         Args:
-            department: Department name (proddev, secit, finops, field, people, marketing, legal, company)
+            project_name: Name of the project (partial match supported)
+            department: Optional department filter
         
         Returns:
-            List of OKRs with their contributing projects and progress
+            Dict with project details
         """
-        # Get the OKR board for this department
-        board_type = f"{department}_okr"
+        cache = self._get_cache()
         
-        try:
-            okr_items = self.client.get_board_items(board_type)
-        except ValueError:
-            raise ValueError(f"Unknown department: {department}")
+        # Search for project
+        departments_to_search = [department.lower()] if department else cache['portfolios'].keys()
         
-        okr_summary = []
-        
-        for okr in okr_items:
-            # Get all projects contributing to this OKR
-            contributing_projects = self.get_okr_contributing_projects(okr['id'])
+        matches = []
+        for dept in departments_to_search:
+            if dept not in cache['portfolios']:
+                continue
             
-            # Count at-risk projects
-            at_risk_count = sum(1 for p in contributing_projects if p.get('at_risk', False))
-            
-            # Count key results (subitems)
-            key_results_count = len(okr.get('subitems', []))
-            
-            okr_summary.append({
-                'okr_id': okr['id'],
-                'okr_name': okr['name'],
-                'department': department,
-                'contributing_projects': len(contributing_projects),
-                'at_risk_projects': at_risk_count,
-                'key_results_count': key_results_count,
-                'projects': contributing_projects
-            })
+            for item in cache['portfolios'][dept]['items']:
+                if project_name.lower() in item['name'].lower():
+                    matches.append({
+                        'department': dept,
+                        'item': item
+                    })
         
-        return okr_summary
+        if not matches:
+            return {'error': f"No projects found matching '{project_name}'"}
+        
+        if len(matches) > 1:
+            return {
+                'error': f"Multiple projects found matching '{project_name}'",
+                'matches': [{'name': m['item']['name'], 'department': m['department']} for m in matches]
+            }
+        
+        # Single match found
+        match = matches[0]
+        item = match['item']
+        
+        # Count contributing projects and milestones
+        contributing_projects = []
+        milestones = []
+        for subitem in item.get('subitems', []):
+            if self._is_milestone(subitem):
+                milestones.append(subitem['name'])
+            else:
+                link = self._get_contributing_project_link(subitem)
+                if link:
+                    contributing_projects.append(link)
+        
+        return {
+            'name': item['name'],
+            'department': match['department'],
+            'status': self._parse_status(item['column_values']),
+            'owner': self._parse_owner(item['column_values']),
+            'path_to_green': self._parse_path_to_green(item['column_values']),
+            'tier': self._get_column_value(item['column_values'], 'dropdown_mksq3s8t') or 'Not Set',
+            'target_date': self._get_column_value(item['column_values'], 'date4') or 'Not Set',
+            'okr_links': self._parse_okr_links(item['column_values']),
+            'total_subitems': len(item.get('subitems', [])),
+            'contributing_projects_count': len(contributing_projects),
+            'milestones_count': len(milestones)
+        }
     
-    def get_all_projects(self, department: Optional[str] = None) -> List[Dict]:
+    def get_contributing_projects(self, project_name: str, department: Optional[str] = None) -> Dict:
         """
-        Get all projects, optionally filtered by department
+        Get contributing projects for a given project from cache
+        
+        Args:
+            project_name: Name of the parent project
+            department: Optional department filter
+        
+        Returns:
+            Dict with contributing projects
+        """
+        cache = self._get_cache()
+        
+        # Find the project
+        departments_to_search = [department.lower()] if department else cache['portfolios'].keys()
+        
+        parent_item = None
+        parent_dept = None
+        for dept in departments_to_search:
+            if dept not in cache['portfolios']:
+                continue
+            
+            for item in cache['portfolios'][dept]['items']:
+                if project_name.lower() in item['name'].lower():
+                    parent_item = item
+                    parent_dept = dept
+                    break
+            if parent_item:
+                break
+        
+        if not parent_item:
+            return {'error': f"Project '{project_name}' not found"}
+        
+        # Extract contributing projects (non-milestone subitems)
+        contributing_projects = []
+        for subitem in parent_item.get('subitems', []):
+            if not self._is_milestone(subitem):
+                link = self._get_contributing_project_link(subitem)
+                if link:
+                    contributing_projects.append({
+                        'name': link,
+                        'status': self._parse_status(subitem['column_values']),
+                        'owner': self._parse_owner(subitem['column_values'])
+                    })
+        
+        return {
+            'parent_project': parent_item['name'],
+            'department': parent_dept,
+            'contributing_projects': contributing_projects,
+            'total_count': len(contributing_projects)
+        }
+    
+    def get_milestones(self, project_name: str, department: Optional[str] = None) -> Dict:
+        """
+        Get milestones for a given project from cache
+        
+        Args:
+            project_name: Name of the parent project
+            department: Optional department filter
+        
+        Returns:
+            Dict with milestones
+        """
+        cache = self._get_cache()
+        
+        # Find the project
+        departments_to_search = [department.lower()] if department else cache['portfolios'].keys()
+        
+        parent_item = None
+        parent_dept = None
+        for dept in departments_to_search:
+            if dept not in cache['portfolios']:
+                continue
+            
+            for item in cache['portfolios'][dept]['items']:
+                if project_name.lower() in item['name'].lower():
+                    parent_item = item
+                    parent_dept = dept
+                    break
+            if parent_item:
+                break
+        
+        if not parent_item:
+            return {'error': f"Project '{project_name}' not found"}
+        
+        # Extract milestones
+        milestones = []
+        for subitem in parent_item.get('subitems', []):
+            if self._is_milestone(subitem):
+                milestones.append({
+                    'name': subitem['name'],
+                    'status': self._parse_status(subitem['column_values']),
+                    'owner': self._parse_owner(subitem['column_values']),
+                    'target_date': self._get_column_value(subitem['column_values'], 'date4') or 'Not Set'
+                })
+        
+        return {
+            'parent_project': parent_item['name'],
+            'department': parent_dept,
+            'milestones': milestones,
+            'total_count': len(milestones)
+        }
+    
+    def get_okr_links(self, project_name: str, department: Optional[str] = None) -> Dict:
+        """
+        Get OKR links for a given project from cache
+        
+        Args:
+            project_name: Name of the project
+            department: Optional department filter
+        
+        Returns:
+            Dict with OKR links
+        """
+        cache = self._get_cache()
+        
+        # Find the project
+        departments_to_search = [department.lower()] if department else cache['portfolios'].keys()
+        
+        parent_item = None
+        parent_dept = None
+        for dept in departments_to_search:
+            if dept not in cache['portfolios']:
+                continue
+            
+            for item in cache['portfolios'][dept]['items']:
+                if project_name.lower() in item['name'].lower():
+                    parent_item = item
+                    parent_dept = dept
+                    break
+            if parent_item:
+                break
+        
+        if not parent_item:
+            return {'error': f"Project '{project_name}' not found"}
+        
+        okr_links = self._parse_okr_links(parent_item['column_values'])
+        
+        return {
+            'project': parent_item['name'],
+            'department': parent_dept,
+            'okr_links': okr_links,
+            'total_count': len(okr_links)
+        }
+    
+    def search_projects(self, query: str, department: Optional[str] = None, status: Optional[str] = None) -> Dict:
+        """
+        Search projects from cache
+        
+        Args:
+            query: Search query (matches project name)
+            department: Optional department filter
+            status: Optional status filter
+        
+        Returns:
+            Dict with search results
+        """
+        cache = self._get_cache()
+        
+        departments_to_search = [department.lower()] if department else cache['portfolios'].keys()
+        
+        results = []
+        for dept in departments_to_search:
+            if dept not in cache['portfolios']:
+                continue
+            
+            for item in cache['portfolios'][dept]['items']:
+                # Name match
+                if query.lower() not in item['name'].lower():
+                    continue
+                
+                # Status filter
+                item_status = self._parse_status(item['column_values'])
+                if status and status.lower() not in item_status.lower():
+                    continue
+                
+                results.append({
+                    'name': item['name'],
+                    'department': dept,
+                    'status': item_status,
+                    'owner': self._parse_owner(item['column_values']),
+                    'tier': self._get_column_value(item['column_values'], 'dropdown_mksq3s8t') or 'Not Set'
+                })
+        
+        return {
+            'query': query,
+            'filters': {
+                'department': department,
+                'status': status
+            },
+            'results': results,
+            'total_count': len(results)
+        }
+    
+    def get_projects_by_okr(self, okr_query: str, department: str = None) -> Dict[str, Any]:
+        """
+        Get all projects linked to a specific OKR (reverse lookup).
+        
+        Args:
+            okr_query: OKR identifier or partial name (e.g., 'KR3', 'Company O1', 'ProdDev KR5')
+            department: Optional department filter for projects
+        
+        Returns:
+            Dictionary with OKR name, department filter, total count, and matching projects
+        """
+        cache = self._get_cache()
+        
+        okr_query_lower = okr_query.lower()
+        results = []
+        matched_okr_name = None
+        
+        # Search through all portfolios
+        for dept_name, portfolio in cache['portfolios'].items():  # ✅ Fixed
+            # Apply department filter if specified
+            if department and dept_name != department:
+                continue
+            
+            for item in portfolio['items']:
+                okr_links = item.get('okr_links', '')
+                
+                # Skip if no OKR links
+                if not okr_links:
+                    continue
+                
+                # Check if the OKR query matches any of the linked OKRs
+                if okr_query_lower in okr_links.lower():
+                    # Store the first matched OKR name for display
+                    if not matched_okr_name:
+                        matched_okr_name = okr_query
+                    
+                    results.append({
+                        'name': item.get('name', 'Unnamed'),
+                        'department': dept_name,  # ✅ Use dept_name from loop
+                        'status': item.get('status', 'Unknown'),
+                        'owner': item.get('owner', 'Unassigned'),
+                        'tier': item.get('tier', 'Unknown'),
+                        'okr_links': okr_links
+                    })
+        
+        if not matched_okr_name:
+            return {
+                'error': f"No projects found linked to OKR matching '{okr_query}'. Try a different search term (e.g., 'KR3', 'Company O1', 'Customer Trust')."
+            }
+        
+        return {
+            'okr_name': okr_query,
+            'department_filter': department,
+            'total_count': len(results),
+            'projects': results
+        }
+    
+    def get_portfolio_health(self, department: Optional[str] = None) -> Dict:
+        """
+        Get portfolio health metrics from cache
         
         Args:
             department: Optional department filter
         
         Returns:
-            List of all projects with basic info
+            Dict with health metrics
         """
-        all_projects = self._get_all_portfolio_items()
+        cache = self._get_cache()
         
-        if department:
-            all_projects = [p for p in all_projects if p.get('_department') == department]
+        departments_to_analyze = [department.lower()] if department else cache['portfolios'].keys()
         
-        result = []
-        for project in all_projects:
-            status_label, status_color = self._parse_status(project)
-            
-            # Get OKR names from pre-parsed data
-            okr_names = self._get_okr_links_from_item(project)
-            
-            result.append({
-                'project_id': project['id'],
-                'project_name': project['name'],
-                'department': project.get('_department', 'unknown'),
-                'status': status_label,
-                'status_color': status_color,
-                'at_risk': self._is_at_risk(status_label),
-                'owner': self._get_column_value(project, self.col_owner) or 'Unassigned',
-                'target_date': self._get_column_value(project, self.col_target_date) or 'No date set',
-                'portfolio_tier': self._get_column_value(project, self.col_portfolio_tier) or 'None',
-                'theme': self._get_column_value(project, self.col_theme) or 'None',
-                'okr_aligned': len(okr_names) > 0,
-                'okr_count': len(okr_names)
-            })
+        all_items = []
+        for dept in departments_to_analyze:
+            if dept not in cache['portfolios']:
+                continue
+            all_items.extend(cache['portfolios'][dept]['items'])
         
-        return result
-    
-    def get_department_summary(self, department: str) -> Dict:
-        """
-        Get a high-level summary for a specific department
+        if not all_items:
+            return {'error': 'No projects found'}
         
-        Args:
-            department: Department name
+        # Calculate health metrics
+        total = len(all_items)
+        status_counts = {}
+        for item in all_items:
+            status = self._parse_status(item['column_values'])
+            status_counts[status] = status_counts.get(status, 0) + 1
         
-        Returns:
-            Summary statistics for the department
-        """
-        projects = self.get_all_projects(department=department)
+        green = status_counts.get('Green', 0)
+        yellow = status_counts.get('Yellow', 0)
+        red = status_counts.get('Red', 0)
         
-        total_projects = len(projects)
-        at_risk_projects = [p for p in projects if p['at_risk']]
-        green_projects = [p for p in projects if p['status_color'] == 'green']
-        yellow_projects = [p for p in projects if p['status_color'] == 'yellow']
-        red_projects = [p for p in projects if p['status_color'] == 'red']
-        
-        # Get OKR alignment
-        okr_aligned = [p for p in projects if p.get('okr_aligned', False)]
+        health_score = ((green * 100) + (yellow * 50) + (red * 0)) / total if total > 0 else 0
         
         return {
-            'department': department,
-            'total_projects': total_projects,
-            'at_risk_count': len(at_risk_projects),
-            'green_count': len(green_projects),
-            'yellow_count': len(yellow_projects),
-            'red_count': len(red_projects),
-            'okr_aligned_count': len(okr_aligned),
-            'okr_alignment_percentage': round(len(okr_aligned) / total_projects * 100, 1) if total_projects > 0 else 0,
-            'projects': projects
+            'department': department if department else 'All',
+            'total_projects': total,
+            'status_breakdown': status_counts,
+            'health_score': round(health_score, 2),
+            'green_percentage': round((green / total * 100), 2) if total > 0 else 0,
+            'yellow_percentage': round((yellow / total * 100), 2) if total > 0 else 0,
+            'red_percentage': round((red / total * 100), 2) if total > 0 else 0
         }

@@ -2,12 +2,16 @@
 """
 Monday.com Portfolio Intelligence MCP Server
 
-Exposes 5 query capabilities as MCP tools:
-1. get_project_status - Get detailed status of a specific project
-2. get_lead_follow_breakdown - Get lead/follow project relationships
-3. get_okr_contributing_projects - Get projects contributing to an OKR
-4. identify_risks - Identify at-risk projects and overallocated people
-5. get_department_okr_progress - Get OKR progress for a department
+Exposes 9 portfolio query capabilities as MCP tools:
+1. get_portfolio_summary - Get portfolio overview with status/tier breakdowns
+2. get_project_details - Get detailed information about a specific project
+3. get_contributing_projects - Get contributing projects for a parent project
+4. get_milestones - Get milestones for a project
+5. get_okr_links - Get OKR links for a project
+6. get_projects_by_okr - Get all projects linked to a specific OKR (reverse lookup)
+7. search_projects - Search projects by name, department, status
+8. get_portfolio_health - Get portfolio health metrics
+9. get_portfolio_schema - Get complete system schema and OKR list
 """
 
 import sys
@@ -20,7 +24,7 @@ import logging
 from typing import Any, Dict, List
 from mcp.server import Server
 from mcp.types import Tool, TextContent
-from core.portfolio_logic import PortfolioIntelligence
+from core.portfolio_logic import PortfolioLogic
 
 # Setup logging to file
 logging.basicConfig(
@@ -37,10 +41,10 @@ logger.info("🚀 MCP Server starting up...")
 # Initialize the MCP server
 app = Server("monday-portfolio-intelligence")
 
-# Initialize portfolio intelligence
-logger.info("📊 Initializing PortfolioIntelligence...")
-pi = PortfolioIntelligence()
-logger.info("✅ PortfolioIntelligence initialized")
+# Initialize portfolio logic
+logger.info("📊 Initializing PortfolioLogic...")
+portfolio = PortfolioLogic()
+logger.info("✅ PortfolioLogic initialized")
 
 
 @app.list_tools()
@@ -48,80 +52,148 @@ async def list_tools() -> List[Tool]:
     """List all available MCP tools"""
     return [
         Tool(
-            name="get_project_status",
-            description="Get detailed status information for a specific project including status, owner, OKR alignment, and risk indicators",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "project_name": {
-                        "type": "string",
-                        "description": "The name of the project (case-insensitive, partial match supported)"
-                    }
-                },
-                "required": ["project_name"]
-            }
-        ),
-        Tool(
-            name="get_lead_follow_breakdown",
-            description="Get the lead/follow project breakdown showing which projects are following a lead project",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "project_name": {
-                        "type": "string",
-                        "description": "The name of the lead project"
-                    }
-                },
-                "required": ["project_name"]
-            }
-        ),
-        Tool(
-            name="get_okr_contributing_projects",
-            description="Get all projects contributing to a specific OKR (Objective or Key Result). Returns project details, status, and risk indicators.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "okr_name": {
-                        "type": "string",
-                        "description": "The name of the OKR (Objective or Key Result). Use partial match to find OKRs."
-                    },
-                    "department": {
-                        "type": "string",
-                        "description": "Department to search in: 'company' or 'proddev' (default: 'proddev')",
-                        "enum": ["company", "proddev"],
-                        "default": "proddev"
-                    }
-                },
-                "required": ["okr_name"]
-            }
-        ),
-        Tool(
-            name="identify_risks",
-            description="Identify all risk signals across the portfolio including at-risk projects (red/yellow status) and overallocated people (>70% capacity). Can filter by department.",
+            name="get_portfolio_summary",
+            description="Get portfolio summary with total projects, status breakdown, and tier breakdown. Can filter by department.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "department": {
                         "type": "string",
-                        "description": "Filter by department: 'company', 'proddev', 'secit', 'finops', 'field', 'people', 'marketing', 'legal'. Leave empty for all departments.",
-                        "enum": ["", "company", "proddev", "secit", "finops", "field", "people", "marketing", "legal"],
-                        "default": ""
+                        "description": "Optional department filter: 'company', 'proddev', 'secit', 'finops', 'field', 'people', 'marketing', 'legal'. Leave empty for all departments.",
+                        "enum": ["", "company", "proddev", "secit", "finops", "field", "people", "marketing", "legal"]
                     }
                 },
                 "required": []
             }
         ),
         Tool(
-            name="get_department_okr_progress",
-            description="Get OKR progress summary for a department showing contributing projects and at-risk counts for each OKR",
+            name="get_project_details",
+            description="Get detailed information about a specific project including status, owner, OKR links, contributing projects, and milestones.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_name": {
+                        "type": "string",
+                        "description": "Name of the project (partial match supported)"
+                    },
+                    "department": {
+                        "type": "string",
+                        "description": "Optional department filter to narrow search",
+                        "enum": ["", "company", "proddev", "secit", "finops", "field", "people", "marketing", "legal"]
+                    }
+                },
+                "required": ["project_name"]
+            }
+        ),
+        Tool(
+            name="get_contributing_projects",
+            description="Get all contributing projects (cross-department dependencies) for a parent project.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_name": {
+                        "type": "string",
+                        "description": "Name of the parent project"
+                    },
+                    "department": {
+                        "type": "string",
+                        "description": "Optional department filter",
+                        "enum": ["", "company", "proddev", "secit", "finops", "field", "people", "marketing", "legal"]
+                    }
+                },
+                "required": ["project_name"]
+            }
+        ),
+        Tool(
+            name="get_milestones",
+            description="Get all milestones for a specific project.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_name": {
+                        "type": "string",
+                        "description": "Name of the parent project"
+                    },
+                    "department": {
+                        "type": "string",
+                        "description": "Optional department filter",
+                        "enum": ["", "company", "proddev", "secit", "finops", "field", "people", "marketing", "legal"]
+                    }
+                },
+                "required": ["project_name"]
+            }
+        ),
+        Tool(
+            name="get_okr_links",
+            description="Get OKR links (Objectives and Key Results) for a specific project.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_name": {
+                        "type": "string",
+                        "description": "Name of the project"
+                    },
+                    "department": {
+                        "type": "string",
+                        "description": "Optional department filter",
+                        "enum": ["", "company", "proddev", "secit", "finops", "field", "people", "marketing", "legal"]
+                    }
+                },
+                "required": ["project_name"]
+            }
+        ),
+        Tool(
+            name="get_projects_by_okr",
+            description="Get all projects linked to a specific OKR (Objective or Key Result). Supports partial OKR name matching (e.g., 'KR3', 'Company O1', 'ProdDev KR5', 'Customer Trust').",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "okr_query": {
+                        "type": "string",
+                        "description": "OKR identifier or partial name (e.g., 'KR3', 'Company O1', 'ProdDev KR5', 'Customer Trust')"
+                    },
+                    "department": {
+                        "type": "string",
+                        "description": "Optional: Filter projects by department",
+                        "enum": ["", "company", "proddev", "secit", "finops", "field", "people", "marketing", "legal"]
+                    }
+                },
+                "required": ["okr_query"]
+            }
+        ),
+        Tool(
+            name="search_projects",
+            description="Search and filter projects. All parameters are optional. Use any combination of: project name query, department filter, and/or status filter. **Use this to find at-risk projects (Red or Yellow status)**. Leave all empty to get all projects.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Optional: Search query to match project name. Leave empty to skip name filtering."
+                    },
+                    "department": {
+                        "type": "string",
+                        "description": "Optional: Filter by department",
+                        "enum": ["", "company", "proddev", "secit", "finops", "field", "people", "marketing", "legal"]
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "Optional: Filter by status (e.g., 'Green', 'Yellow', 'Red', 'Completed', 'Not Started')"
+                    }
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="get_portfolio_health",
+            description="Get aggregate portfolio health metrics including health score, status percentages, and risk indicators. **For listing specific at-risk projects, use search_projects with status='Red' or 'Yellow' instead**. Can filter by department.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "department": {
                         "type": "string",
-                        "description": "Department name: 'company' or 'proddev' (default: 'proddev')",
-                        "enum": ["company", "proddev"],
-                        "default": "proddev"
+                        "description": "Optional department filter",
+                        "enum": ["", "company", "proddev", "secit", "finops", "field", "people", "marketing", "legal"]
                     }
                 },
                 "required": []
@@ -129,37 +201,10 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_portfolio_schema",
-            description="Get the structure and schema of the Monday.com portfolio system including boards, relationships, and column definitions. Use this to understand what data is available and how it's connected.",
+            description="Get the complete structure and schema of the Monday.com portfolio system including all OKRs, boards, relationships, and column definitions. Use this FIRST to understand what data is available before answering user questions.",
             inputSchema={
                 "type": "object",
                 "properties": {},
-                "required": []
-            }
-        ),
-        Tool(
-            name="get_portfolio_data",
-            description="Flexible query tool to get raw portfolio data with relationships. Returns structured data that can be filtered and analyzed. Use this for custom queries not covered by specialized tools.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "scope": {
-                        "type": "string",
-                        "description": "Data scope to retrieve",
-                        "enum": ["all", "projects", "okrs", "people", "capacity"],
-                        "default": "all"
-                    },
-                    "departments": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Filter by departments (e.g., ['proddev', 'secit']). Empty = all departments.",
-                        "default": []
-                    },
-                    "include_relationships": {
-                        "type": "boolean",
-                        "description": "Include relationship mappings (projects→OKRs, projects→people, etc.)",
-                        "default": True
-                    }
-                },
                 "required": []
             }
         )
@@ -172,249 +217,248 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
     logger.info(f"🔧 call_tool invoked: {name} with arguments: {arguments}")
     
     try:
-        if name == "get_project_status":
-            logger.info(f"📊 Handling get_project_status")
+        if name == "get_portfolio_summary":
+            department = arguments.get("department") or None
+            result = portfolio.get_portfolio_summary(department)
+            
+            if 'error' in result:
+                return [TextContent(type="text", text=f"Error: {result['error']}\nAvailable departments: {', '.join(result.get('available_departments', []))}")]
+            
+            if department:
+                response = f"""**Portfolio Summary: {result['department'].upper()}**
+
+📊 **Board:** {result['board_name']}
+📦 **Total Projects:** {result['total_projects']}
+📝 **Total Subitems:** {result['total_subitems']}
+
+**Status Breakdown:**
+"""
+                for status, count in result['status_breakdown'].items():
+                    response += f"  • {status}: {count}\n"
+                
+                response += "\n**Tier Breakdown:**\n"
+                for tier, count in result['tier_breakdown'].items():
+                    response += f"  • {tier}: {count}\n"
+            else:
+                response = f"""**Portfolio Summary: ALL DEPARTMENTS**
+
+📊 **Total Portfolios:** {result['total_portfolios']}
+📦 **Total Projects:** {result['total_projects']}
+📝 **Total Subitems:** {result['total_subitems']}
+
+**Departments:** {', '.join(result['departments'])}
+
+**Status Breakdown:**
+"""
+                for status, count in result['status_breakdown'].items():
+                    response += f"  • {status}: {count}\n"
+                
+                response += "\n**Tier Breakdown:**\n"
+                for tier, count in result['tier_breakdown'].items():
+                    response += f"  • {tier}: {count}\n"
+            
+            return [TextContent(type="text", text=response)]
+        
+        elif name == "get_project_details":
             project_name = arguments.get("project_name")
+            department = arguments.get("department") or None
+            
             if not project_name:
-                logger.warning("❌ project_name is missing")
                 return [TextContent(type="text", text="Error: project_name is required")]
             
-            logger.info(f"🔍 Looking up project: {project_name}")
-            result = pi.get_project_status(project_name)
-            if not result:
-                logger.warning(f"❌ Project not found: {project_name}")
-                return [TextContent(type="text", text=f"Project '{project_name}' not found")]
+            result = portfolio.get_project_details(project_name, department)
             
-            logger.info(f"✅ Found project: {result['project_name']}")
-            # Format the response
-            response = f"""**Project Status: {result['project_name']}**
+            if 'error' in result:
+                if 'matches' in result:
+                    response = f"{result['error']}\n\n**Matches found:**\n"
+                    for match in result['matches']:
+                        response += f"  • {match['name']} ({match['department']})\n"
+                    return [TextContent(type="text", text=response)]
+                return [TextContent(type="text", text=result['error'])]
+            
+            response = f"""**Project Details: {result['name']}**
 
-📊 **Status:** {result['status']} ({result['status_color']})
-⚠️  **At Risk:** {'Yes' if result['at_risk'] else 'No'}
+🏢 **Department:** {result['department']}
+📊 **Status:** {result['status']}
 👤 **Owner:** {result['owner']}
+🎯 **Tier:** {result['tier']}
 📅 **Target Date:** {result['target_date']}
-🎯 **OKR Aligned:** {'Yes' if result['okr_aligned'] else 'No'} ({result['okr_count']} OKR links)
-📦 **Portfolio Tier:** {result['portfolio_tier']}
-🎨 **Theme:** {result['theme']}
-📝 **Subitems:** {result['subitem_count']}
 
 **Path to Green:**
 {result['path_to_green']}
+
+**OKR Links:** {result['okr_links'] if result['okr_links'] else 'None'}
+
+**Subitems:**
+  • Total: {result['total_subitems']}
+  • Contributing Projects: {result['contributing_projects_count']}
+  • Milestones: {result['milestones_count']}
 """
-            logger.info(f"✅ Returning response for {result['project_name']}")
             return [TextContent(type="text", text=response)]
         
-        elif name == "get_lead_follow_breakdown":
-            logger.info(f"📊 Handling get_lead_follow_breakdown")
+        elif name == "get_contributing_projects":
             project_name = arguments.get("project_name")
+            department = arguments.get("department") or None
+            
             if not project_name:
-                logger.warning("❌ project_name is missing")
                 return [TextContent(type="text", text="Error: project_name is required")]
             
-            logger.info(f"🔍 Looking up lead/follow for: {project_name}")
-            result = pi.get_lead_follow_breakdown(project_name)
-            if not result:
-                logger.warning(f"❌ Project not found: {project_name}")
-                return [TextContent(type="text", text=f"Project '{project_name}' not found")]
+            result = portfolio.get_contributing_projects(project_name, department)
             
-            # Format the response
-            response = f"""**Lead/Follow Breakdown**
+            if 'error' in result:
+                return [TextContent(type="text", text=result['error'])]
+            
+            response = f"""**Contributing Projects**
 
-🎯 **Lead Project:** {result.lead_project}
-📊 **Total Follow Projects:** {result.total_follow_count}
+🎯 **Parent Project:** {result['parent_project']}
+🏢 **Department:** {result['department']}
+📊 **Total Contributing Projects:** {result['total_count']}
 
-**Follow Projects:**
 """
-            if result.follow_projects:
-                for follow in result.follow_projects:
-                    response += f"\n- {follow['name']}"
-                    response += f"\n  Status: {follow['status']}"
-                    response += f"\n  Owner: {follow['owner']}\n"
+            if result['contributing_projects']:
+                for proj in result['contributing_projects']:
+                    response += f"• **{proj['name']}**\n"
+                    response += f"  Status: {proj['status']} | Owner: {proj['owner']}\n\n"
             else:
-                response += "\nNo follow projects found."
+                response += "No contributing projects found.\n"
             
             return [TextContent(type="text", text=response)]
         
-        elif name == "get_okr_contributing_projects":
-            okr_name = arguments.get("okr_name")
-            department = arguments.get("department", "proddev")
+        elif name == "get_milestones":
+            project_name = arguments.get("project_name")
+            department = arguments.get("department") or None
             
-            if not okr_name:
-                return [TextContent(type="text", text="Error: okr_name is required")]
+            if not project_name:
+                return [TextContent(type="text", text="Error: project_name is required")]
             
-            # Find the OKR by name using the new helper
-            matching_okr = pi.find_okr_by_name(okr_name, department)
+            result = portfolio.get_milestones(project_name, department)
             
-            if not matching_okr:
-                return [TextContent(type="text", text=f"OKR matching '{okr_name}' not found in {department}")]
+            if 'error' in result:
+                return [TextContent(type="text", text=result['error'])]
             
-            result = pi.get_okr_contributing_projects(matching_okr['id'])
-            at_risk = [p for p in result if p.get('at_risk', False)]
-            
-            # Format the response
-            response = f"""**OKR Contributing Projects**
+            response = f"""**Milestones**
 
-        🎯 **OKR:** {matching_okr['name']}
-        📊 **Contributing Projects:** {len(result)}
-        ⚠️  **At Risk:** {len(at_risk)}
+🎯 **Parent Project:** {result['parent_project']}
+🏢 **Department:** {result['department']}
+📊 **Total Milestones:** {result['total_count']}
 
-        **Projects:**
-        """
-            if result:
-                for proj in result:
-                    risk_icon = "⚠️" if proj.get('at_risk', False) else "✅"
-                    response += f"\n{risk_icon} **{proj['project_name']}** ({proj.get('status', 'N/A')})"
-                    if proj.get('okr_links'):
-                        response += f"\n   Links: {', '.join(proj['okr_links'][:2])}"
-                    response += "\n"
+"""
+            if result['milestones']:
+                for milestone in result['milestones']:
+                    response += f"• **{milestone['name']}**\n"
+                    response += f"  Status: {milestone['status']} | Owner: {milestone['owner']} | Target: {milestone['target_date']}\n\n"
             else:
-                response += "\nNo projects currently linked to this OKR."
+                response += "No milestones found.\n"
             
             return [TextContent(type="text", text=response)]
         
-        elif name == "identify_risks":
-            department = arguments.get("department", "")
-            result = pi.identify_risks()
+        elif name == "get_okr_links":
+            project_name = arguments.get("project_name")
+            department = arguments.get("department") or None
             
-            # Filter by department if specified
-            if department:
-                result['at_risk_projects']['projects'] = [
-                    p for p in result['at_risk_projects']['projects'] 
-                    if p.get('department') == department
-                ]
-                result['at_risk_projects']['count'] = len(result['at_risk_projects']['projects'])
-                
-                result['overallocated_people']['people'] = [
-                    p for p in result['overallocated_people']['people']
-                    if p.get('department') == department
-                ]
-                result['overallocated_people']['count'] = len(result['overallocated_people']['people'])
-                
-                result['total_risk_signals'] = result['at_risk_projects']['count'] + result['overallocated_people']['count']
+            if not project_name:
+                return [TextContent(type="text", text="Error: project_name is required")]
             
-            # Group projects by department
-            projects_by_dept = {}
-            for proj in result['at_risk_projects']['projects']:
-                dept = proj['department'] if proj['department'] else 'company'
-                if dept not in projects_by_dept:
-                    projects_by_dept[dept] = []
-                projects_by_dept[dept].append(proj)
+            result = portfolio.get_okr_links(project_name, department)
             
-            # Format the response
-            dept_filter_text = f" in {department.upper()}" if department else ""
-            response = f"""**Portfolio Risk Analysis{dept_filter_text}**
+            if 'error' in result:
+                return [TextContent(type="text", text=result['error'])]
+            
+            response = f"""**OKR Links**
 
-🚨 **Total Risk Signals:** {result['total_risk_signals']}
-
-📊 **At-Risk Projects:** {result['at_risk_projects']['count']}
-👥 **Overallocated People:** {result['overallocated_people']['count']}
+🎯 **Project:** {result['project']}
+🏢 **Department:** {result['department']}
+📊 **Total OKR Links:** {result['total_count']}
 
 """
-            # Show projects grouped by department
-            for dept in sorted(projects_by_dept.keys()):
-                projects = projects_by_dept[dept]
-                response += f"\n**{dept.upper()} - {len(projects)} at-risk project(s):**\n"
-                
-                for proj in projects:
-                    response += f"\n⚠️  **{proj['name']}** ({proj['status']})"
-                    response += f"\n   Owner: {proj['owner']}"
-                    
-                    # Show OKR names if available
-                    if proj.get('okr_names') and len(proj['okr_names']) > 0:
-                        response += f"\n   OKRs: {', '.join(proj['okr_names'][:2])}"
-                        if len(proj['okr_names']) > 2:
-                            response += f" (+{len(proj['okr_names']) - 2} more)"
-                    else:
-                        response += f"\n   OKR Aligned: No"
-                    
-                    if proj['path_to_green'] and proj['path_to_green'] != 'Not documented':
-                        response += f"\n   Path to Green: {proj['path_to_green'][:100]}..."
-                    response += "\n"
-            
-            if result['overallocated_people']['count'] > 0:
-                response += "\n**Overallocated People:**\n"
-                for person in result['overallocated_people']['people']:
-                    response += f"\n⚠️  **{person['name']}** - {person['capacity']}% allocated"
-                    response += f"\n   Department: {person['department']}"
-                    response += f"\n   Projects: {', '.join(person['projects'][:3])}"
-                    if len(person['projects']) > 3:
-                        response += f" (+{len(person['projects']) - 3} more)"
-                    response += "\n"
+            if result['okr_links']:
+                for okr in result['okr_links']:
+                    response += f"• {okr}\n"
+            else:
+                response += "No OKR links found.\n"
             
             return [TextContent(type="text", text=response)]
         
-        elif name == "get_department_okr_progress":
-            department = arguments.get("department", "proddev")
-            result = pi.get_department_okr_progress(department)
+        elif name == "get_projects_by_okr":
+            okr_query = arguments.get("okr_query")
+            department = arguments.get("department") or None
             
-            # Format the response
-            response = f"""**{department.upper()} OKR Progress Summary**
+            if not okr_query:
+                return [TextContent(type="text", text="Error: okr_query is required")]
+            
+            result = portfolio.get_projects_by_okr(okr_query, department)
+            
+            if 'error' in result:
+                return [TextContent(type="text", text=result['error'])]
+            
+            response = f"""**Projects Linked to OKR**
 
-📊 **Total OKRs:** {len(result)}
+🎯 **OKR:** {result['okr_name']}
+🏢 **Department Filter:** {result['department_filter'] or 'All'}
+📊 **Total Projects:** {result['total_count']}
 
 """
-            for okr in result:
-                response += f"\n🎯 **{okr['okr_name']}**"
-                response += f"\n   Contributing Projects: {okr['contributing_projects']}"
-                response += f"\n   At Risk: {okr['at_risk_projects']}"
-                response += f"\n   Key Results: {okr['key_results_count']}"
-                
-                if okr.get('projects') and len(okr['projects']) > 0:
-                    response += "\n   Top Projects:"
-                    for proj in okr['projects'][:3]:
-                        risk_icon = "⚠️" if proj.get('at_risk', False) else "✅"
-                        response += f"\n     {risk_icon} {proj['project_name']} ({proj.get('status', 'N/A')})"
-                response += "\n"
+            if result['projects']:
+                for proj in result['projects']:
+                    response += f"• **{proj['name']}** ({proj['status']})\n"
+                    response += f"  Dept: {proj['department']} | Owner: {proj['owner']} | Tier: {proj['tier']}\n\n"
+            else:
+                response += "No projects found linked to this OKR.\n"
+            
+            return [TextContent(type="text", text=response)]
+        
+        elif name == "search_projects":
+            query = arguments.get("query", "")
+            department = arguments.get("department") or None
+            status = arguments.get("status") or None
+            
+            result = portfolio.search_projects(query, department, status)
+            
+            response = f"""**Search Results**
+
+🔍 **Query:** {result['query']}
+🏢 **Department Filter:** {result['filters']['department'] or 'All'}
+📊 **Status Filter:** {result['filters']['status'] or 'All'}
+📦 **Results Found:** {result['total_count']}
+
+"""
+            if result['results']:
+                for proj in result['results']:
+                    response += f"• **{proj['name']}** ({proj['status']})\n"
+                    response += f"  Dept: {proj['department']} | Owner: {proj['owner']} | Tier: {proj['tier']}\n\n"
+            else:
+                response += "No projects found matching your criteria.\n"
+            
+            return [TextContent(type="text", text=response)]
+        
+        elif name == "get_portfolio_health":
+            department = arguments.get("department") or None
+            
+            result = portfolio.get_portfolio_health(department)
+            
+            if 'error' in result:
+                return [TextContent(type="text", text=result['error'])]
+            
+            response = f"""**Portfolio Health: {result['department'].upper()}**
+
+📊 **Total Projects:** {result['total_projects']}
+💯 **Health Score:** {result['health_score']}/100
+
+**Status Distribution:**
+  🟢 Green: {result['green_percentage']}%
+  🟡 Yellow: {result['yellow_percentage']}%
+  🔴 Red: {result['red_percentage']}%
+
+**Status Breakdown:**
+"""
+            for status, count in result['status_breakdown'].items():
+                response += f"  • {status}: {count}\n"
             
             return [TextContent(type="text", text=response)]
         
         elif name == "get_portfolio_schema":
             # Return the schema/structure of the portfolio system
-            schema = {
-                "boards": {
-                    "portfolios": {
-                        "description": "Project portfolio boards tracking initiatives across departments",
-                        "departments": ["company (top-level/cross-functional)", "proddev", "secit", "finops", "field", "people", "marketing", "legal"],
-                        "key_columns": [
-                            "name", 
-                            "status", 
-                            "owner", 
-                            "okr_links", 
-                            "lead_project", 
-                            "follow_projects", 
-                            "path_to_green (action plan for at-risk projects to get back on track)"
-                        ],
-                        "subitems": "Used for two purposes: 1) Lead/Follow project relationships (identified by having multiple mirror/lookup columns), 2) Project milestones (fewer mirror columns). Not always clearly distinguished."
-                    },
-                    "okrs": {
-                        "description": "OKR boards tracking objectives and key results",
-                        "departments": ["company (top-level)", "proddev", "secit", "finops", "field", "people", "marketing", "legal"],
-                        "key_columns": ["name", "type (Objective/Key Result)", "linked_projects"]
-                    },
-                    "capacity": {
-                        "description": "People capacity boards tracking allocation across projects",
-                        "departments": ["proddev", "secit", "finops", "field", "people", "marketing", "legal"],
-                        "key_columns": ["person_name", "project_allocations", "total_capacity"],
-                        "risk_threshold": "People with >70% capacity are considered overallocated"
-                    }
-                },
-                "relationships": {
-                    "projects_to_okrs": "Projects link to OKRs via okr_link columns",
-                    "projects_to_projects": "Lead projects link to follow projects via subitems (identified by mirror columns)",
-                    "projects_to_people": "Projects link to people via capacity boards",
-                    "okrs_to_projects": "OKRs link back to contributing projects"
-                },
-                "status_values": {
-                    "green": "On track",
-                    "yellow": "At risk - needs attention",
-                    "red": "Critical - blocked or significantly delayed (also at risk)",
-                    "blue": "Completed (also called 'Done')",
-                    "gray": "Not started",
-                    "pink": "Cancelled or deprioritized"
-                }
-            }
-            
-            response = f"""**Monday.com Portfolio System Schema**
+            response = """**Monday.com Portfolio System Schema**
 
 📋 **Available Boards:**
 
@@ -423,55 +467,59 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
   • company (top-level/cross-functional portfolio)
   • proddev, secit, finops, field, people, marketing, legal (department portfolios)
 - Key Data: 
-  • Status, Owner, OKR Links
-  • Lead/Follow relationships (via subitems with mirror columns)
-  • Milestones (via subitems with fewer mirror columns)
+  • Status, Owner, OKR Links, Target Date
+  • Contributing Projects (cross-department dependencies via subitems with mirror columns)
+  • Milestones (project milestones via subitems with fewer mirror columns)
   • Path to Green (action plan for at-risk projects)
+  • Portfolio Tier (strategic importance)
 
 **OKR Boards** (Objectives & Key Results)
 - Departments: company (top-level), proddev, secit, finops, field, people, marketing, legal
+- Structure: Objectives (parent items) → Key Results (subitems)
 - Key Data: OKR name, Type (Objective/KR), Linked projects
 
-**Capacity Boards** (People allocation)
+**Capacity Boards** (People allocation) - *Coming soon*
 - Departments: proddev, secit, finops, field, people, marketing, legal
 - Key Data: Person name, Project allocations, Total capacity
-- Risk Threshold: People with >70% capacity are considered overallocated
 
 🔗 **Relationships:**
 - Projects → OKRs (via okr_link columns)
-- Projects → Projects (Lead/Follow via subitems - identified by mirror/lookup columns)
-- Projects → People (via capacity boards)
-- OKRs → Projects (reverse lookup)
+- Projects → Projects (Contributing Projects via subitems with mirror/lookup columns)
+- Projects → People (via capacity boards - coming soon)
+- OKRs → Projects (reverse lookup via get_projects_by_okr tool)
 
 📊 **Status Values:**
-- 🟢 Green: On track
-- 🟡 Yellow: At risk - needs attention
-- 🔴 Red: Critical - blocked or significantly delayed
-- 🔵 Blue: Completed (also called "Done")
-- ⚪ Gray: Not Started
-- 🩷 Pink: Cancelled or deprioritized
+- 🟢 **Green**: On track
+- 🟡 **Yellow**: At risk - needs attention
+- 🔴 **Red**: Critical - blocked or significantly delayed (also at risk)
+- 🔵 **Blue**: Completed (also called "Done")
+- ⚪ **Gray**: Not Started
+- 🩷 **Pink**: Cancelled or deprioritized
 
-**Note:**
-- "At risk" projects include both Yellow and Red statuses
+**Important Notes:**
+- **"At risk" projects include both Yellow and Red statuses**
 - "Completed", "done", and "blue" all refer to the same status
 - "Cancelled" and "deprioritized" both use Pink status
 
 🎯 **Complete OKR List** (Current as of Q1 FY27 - updated 2026-04-08):
-*For the most current OKR list, use get_portfolio_data with scope='okr'*
 
 **COMPANY:**
 O0 - Customer Trust
   └─ KR0 - Increase customer trust by achieving and maintaining 99.99% availability SLO (For core Event to Notification pipeline services) by Q4 FY27
+
 O1 - Lead the Market as the First Choice for Customers in AI‑Powered Incident Management
   └─ KR1 - Increase Customer NPS Score to 45
   └─ KR2 - Increase Operations Cloud Ending ARR (and % of Total ARR) to $65M (12% of total)
   └─ KR3 - Increase Crown Jewels ($1M+ ARR) and Total $100K+ Customers
   └─ KR4 - Improve 'Gross Retention Rate' (%)  to 87.8%
   └─ KR5 - Win and Grow AI Startups (2,439): 'Commercial' Customer Acquisition Growth
+
 O2 - Expand into AI Operations Use Cases with Measurable Customer Outcomes
   └─ KR6 - Increase PD Advance Growth through usage of 2.4 credits
+
 O3 - Scale Customer Growth, Loyalty and GTM Capacity with Partners
   └─ KR7 - Grow Partner-Influenced % of Enterprise Pipeline (Start of Quarter) to 16%
+
 O4 - Operate as an AI-Native Company to Increase Velocity and Improve Customer Engagement & Value
   └─ KR8 - Capacity freed and redeployed to higher‑value work results in 60k hours or 30 FTE equivalent
   └─ KR9 - Prod Dev Cycle-Time Improvement - Increase the velocity of feature delivery using AI and Agents by a minimum of 10% by Q4 FY27
@@ -481,14 +529,18 @@ O1 - Lead the Market as the First Choice for Customers in AI‑Powered Incident 
   └─ KR1 - Improve the percentage of $100K+ accounts using PagerDuty beyond on-call from 26% to 39%+ by Q4 FY27
   └─ KR2 - Improve the percentage of paid customer base using PagerDuty beyond on-call from <2% to 20% by Q4 FY27
   └─ KR3 - Improve usage of paid PagerDuty Advance AI Actions from 198k to 1.42M by Q4 FY27
+
 O2 - Expand into AI Operations Use Cases with Measurable Customer Outcomes
   └─ KR4 - Enable the 5 top LLM/Agent Ops vendors (prioritized by customer demand) by delivering 3 reference use cases by Q4 FY27
+
 O3 - Scale Customer Growth, Loyalty and GTM Capacity with Partners
   └─ TBD
+
 O4 - Operate as an AI-Native Company to Increase Velocity and Improve Customer Engagement & Value
   └─ KR5 - Improve Mean Time to Resolve (MTTR) for Incidents by 20% through AI-assisted Incident Response (PD Advance, Scribe, SRE Agents, etc.) by Q4 F27
   └─ KR6 - Achieve 30% autonomous completion of "SDLC Steel Thread jobs" by Q4 FY27
   └─ KR7 - Deliver 50% of AI-Eligible work items within 24 hours, by Q4 FY27
+
 O0 - Deliver a Trustworthy Core PagerDuty Platform by Raising Reliability, Strengthening Security, and Improving Release Quality
   └─ KR8 - Increase customer trust by achieving and maintaining 99.99% availability SLO (For core Event to Notification pipeline services) by Q4 FY27
   └─ KR9 - Resolve ≥99% Critical vulnerabilities within SLA (excluding architecture-related changes) by Q4 FY27
@@ -498,8 +550,10 @@ O0 - Deliver a Trustworthy Core PagerDuty Platform by Raising Reliability, Stren
 O1 - Accelerate Delivery Velocity Through AI-Driven Operations
   └─ KR1 - Increase deflection rate for all internal enterprise employee support to 50%+
   └─ KR2 - Zero Tier‑1 new vendor risk assessments past SLA (SLA <=5 days)
+
 O2 - Unify Data Strategy to Power Customer Retention & Expansion
   └─ KR3 - Decrease churn and downgrade by $5M leveraging enterprise data products
+
 O3 - Deliver a Trustworthy Core PagerDuty Platform by Raising Reliability, Strengthening Security, and Improving Release Quality
   └─ KR4 - Institutionalize security changes to raise maturity from 3.5 to 3.7 and show measurable uplift
   └─ KR5 - Resolve ≥99% Critical vulnerabilities within SLA (excluding architecture-related changes) by Q4 FY27
@@ -511,6 +565,7 @@ O1 - Reignite a championship-caliber talent experience that attracts, develops, 
   └─ KR1 - Improve new hire (<1 year) retention rate from 73.7% to 84.4% for FY27
   └─ KR2 - Improve quarterly annualized voluntary turnover rate from 20.1%  to 18.5%  for FY27
   └─ KR3 - Improve top talent retention rate from 83.5% to 90% for FY27
+
 O2 - Transform and modernize the employee experience by embedding AI-driven automation across our People programs, systems, and processes, giving Dutonians more time for the work that truly matters.
   └─ KR4 - To be defined and targets set by end of Q1
 
@@ -518,13 +573,17 @@ O2 - Transform and modernize the employee experience by embedding AI-driven auto
 O1 - Marketing: Undisputed leadership in the Incident Management category, winning and retaining more of the market.
   └─ KR1 - Marketing: Increase our presence in LLM search answers from 17.5% to 23%+ by EOFY27
   └─ KR2 - Marketing: Increase Marketing engagement in Global 2000 ICP A customers from X to Y in FY27
+
 O2 - Marketing: Drive adoption and revenue, establishing PagerDuty as the definitive backbone for our AI‑powered operations.
   └─ KR3 - Marketing: Increase AI-related engagement (PD advance demos, AI-related content downloads) from X to Y
+
 O3 - Marketing: Establish an AI‑first marketing team built for operational excellence
   └─ KR4 - Marketing: Improve 5 key processes using AI or automation during FY27
+
 O1 - Commercial: Improve in the Commercial segment
   └─ KR1 - Commercial: Improve quarterly Commercial logo retention by X in FY27
   └─ KR2 - Commercial: Reduce on-call-only customers from X to Y
+
 O2 - Commercial: Increase new revenue in the Commercial segment
   └─ KR3 - Commercial: Increase revenue from AI-native segment from X to Y (ARR) by Q4 FY27
   └─ KR4 - Commercial: Improve quarterly new ARR (nARR) acquisition from $1.2M in Q3 to $XM average per quarter
@@ -540,155 +599,61 @@ O1 - Enhance legal operations through AI and automation to increase strategic ca
   └─ KR1 - To be defined and targets set by the end of Q1
   └─ KR2 - To be defined and targets set by the end of Q1
 
-🔗 **Lead/Follow Project Examples:**
+🔗 **Contributing Projects Examples:**
 
-**Business Transformation: Ops Cloud Pricing & Packaging** (company)
-  └─ [LEAD] ProdDev: OpsCloud Pricing & Packaging
-  └─ [FOLLOW] Finance Contribution
-  └─ [FOLLOW] Corporate Strategy Contribution
+**Business Transformation: Ops Cloud Pricing & Packaging** (company portfolio)
+  └─ ProdDev: OpsCloud Pricing & Packaging (contributing project)
+  └─ Finance Contribution (contributing project)
+  └─ Corporate Strategy Contribution (contributing project)
 
-**Project 270** (company)
-  └─ [LEAD] Field P270
-  └─ [FOLLOW] Enterprise Customer Lifecycle Marketing
-  └─ [FOLLOW] CTO: P270 Dashboards & Data
+**Project 270** (company portfolio)
+  └─ Field P270 (contributing project)
+  └─ Enterprise Customer Lifecycle Marketing (contributing project)
+  └─ CTO: P270 Dashboards & Data (contributing project)
 
-**PD Advance + Agents Enhancements & Usage** (company)
-  └─ [LEAD] ProdDev: SRE Agent
-  └─ [LEAD] ProdDev: Scribe Agent
-  └─ [LEAD] ProdDev: Shift Agent
+**PD Advance + Agents Enhancements & Usage** (company portfolio)
+  └─ ProdDev: SRE Agent (contributing project)
+  └─ ProdDev: Scribe Agent (contributing project)
+  └─ ProdDev: Shift Agent (contributing project)
 
-*Note: Lead/Follow subitems typically have 4+ mirror/lookup columns. Milestone subitems have fewer. Prefixes like [LEAD], [FOLLOW], [MS] are user conventions and not always reliable.*
-
-📝 **Example Queries:**
-- "Show me all red projects in proddev"
-- "Which projects are contributing to KR3 in the company portfolio?"
-- "What's the lead/follow breakdown for OpsCloud Pricing & Packaging?"
-- "Show me overallocated people in secit"
-- "Identify all at-risk projects across the company portfolio"
-- "Get OKR progress for marketing department"
-- "Show me all completed projects in people department"
+*Note: Contributing project subitems typically have 4+ mirror/lookup columns showing linked board data. Milestone subitems have fewer mirror columns and focus on dates/status.*
 
 💡 **Available Tools:**
-- `get_portfolio_schema` - View this schema (you just used it!)
-- `get_portfolio_data` - Flexible queries across departments/scopes/statuses
-- `identify_risks` - Find at-risk projects and overallocated people (filterable by department)
-- `get_okr_contributing_projects` - Projects aligned to specific OKRs
-- `get_project_status` - Deep dive on a specific project
-- `get_lead_follow_breakdown` - Project hierarchy details
-- `get_department_okr_progress` - Department OKR rollup view
-"""
-            return [TextContent(type="text", text=response)]
-        
-        elif name == "get_portfolio_data":
-            scope = arguments.get("scope", "all")
-            departments = arguments.get("departments", [])
-            include_relationships = arguments.get("include_relationships", True)
-            
-            result = {
-                "scope": scope,
-                "departments_filter": departments if departments else "all",
-                "data": {}
-            }
-            
-            # Get projects
-            if scope in ["all", "projects"]:
-                all_projects = pi._get_all_portfolio_items()
-                
-                # Filter by departments if specified
-                if departments:
-                    all_projects = [p for p in all_projects if p.get('_department') in departments]
-                
-                # Format project data
-                projects_data = []
-                for proj in all_projects:
-                    status_label, status_color = pi._parse_status(proj)
-                    
-                    project_data = {
-                        "id": proj['id'],
-                        "name": proj['name'],
-                        "department": proj.get('_department'),
-                        "status": status_label,
-                        "status_color": status_color,
-                        "owner": pi._get_column_value(proj, pi.col_owner) or 'Unassigned',
-                        "path_to_green": pi._get_column_value(proj, pi.col_path_to_green)
-                    }
-                    
-                    # Add relationships if requested
-                    if include_relationships:
-                        okr_links = []
-                        okr_names = []
-                        okr_map = pi._get_all_okr_items()
-                        
-                        for okr_col in pi._get_okr_column_ids(proj):
-                            linked_ids = pi._parse_board_relation(proj, okr_col)
-                            okr_links.extend(linked_ids)
-                            
-                            for okr_id in linked_ids:
-                                okr_item = okr_map.get(okr_id)
-                                if okr_item:
-                                    okr_names.append(okr_item['name'])
-                        
-                        project_data["okr_ids"] = okr_links
-                        project_data["okr_names"] = okr_names
-                    
-                    projects_data.append(project_data)
-                
-                result["data"]["projects"] = {
-                    "count": len(projects_data),
-                    "items": projects_data
-                }
-            
-            # Get OKRs
-            if scope in ["all", "okrs"]:
-                okr_map = pi._get_all_okr_items()
-                okrs_data = []
-                
-                for okr_id, okr in okr_map.items():
-                    okr_data = {
-                        "id": okr_id,
-                        "name": okr['name'],
-                        "department": okr.get('_department')
-                    }
-                    okrs_data.append(okr_data)
-                
-                # Filter by departments if specified
-                if departments:
-                    okrs_data = [o for o in okrs_data if o.get('department') in departments]
-                
-                result["data"]["okrs"] = {
-                    "count": len(okrs_data),
-                    "items": okrs_data
-                }
-            
-            # Format as readable text
-            response = f"""**Portfolio Data Query Results**
 
-📊 **Scope:** {scope}
-🏢 **Departments:** {', '.join(departments) if departments else 'All'}
-🔗 **Relationships:** {'Included' if include_relationships else 'Excluded'}
+1. **get_portfolio_summary** - Get overview with status/tier breakdowns (filterable by department)
+2. **get_project_details** - Deep dive on a specific project (status, owner, OKRs, subitems)
+3. **get_contributing_projects** - Get cross-department dependencies for a project
+4. **get_milestones** - Get project milestones
+5. **get_okr_links** - Get OKR alignments for a project
+6. **get_projects_by_okr** - Get all projects linked to a specific OKR (reverse lookup)
+7. **search_projects** - Universal project filter (any combination of name/department/status)
+8. **get_portfolio_health** - Health metrics and risk indicators (filterable by department)
+9. **get_portfolio_schema** - View this schema (you just used it!)
 
+📝 **Example Queries:**
+
+- "What's the portfolio summary for proddev?"
+- "Show me all at-risk projects" (use search_projects with status="Red" or status="Yellow")
+- "What projects are at risk?" (use search_projects with status="Red" or status="Yellow")
+- "Which projects are Red or Yellow?" (use search_projects with status="Red" or status="Yellow")
+- "Which projects are contributing to KR3?" (use get_projects_by_okr with okr_query="KR3")
+- "What projects support Company O1?" (use get_projects_by_okr with okr_query="Company O1")
+- "Get details for the OpsCloud Pricing project"
+- "What are the milestones for Project 270?"
+- "Search for AI projects in marketing" (use search_projects with query="AI", department="marketing")
+- "What's the health score for the company portfolio?" (use get_portfolio_health for aggregate metrics)
+- "Show me all contributing projects for PD Advance + Agents"
+- "List all completed projects" (use search_projects with status="Completed")
+- "Which proddev projects link to Customer Trust?" (use get_projects_by_okr with okr_query="Customer Trust", department="proddev")
+
+🎯 **Pro Tips:**
+- Use **get_portfolio_schema** first to understand available OKRs and structure
+- "At risk" means Yellow OR Red status
+- Contributing projects show cross-department dependencies
+- **search_projects** supports any combination of filters - all parameters are optional!
+- **get_projects_by_okr** enables reverse lookup from OKRs to projects
+- All data is cached for 10 minutes (fast responses!)
 """
-            
-            if "projects" in result["data"]:
-                response += f"\n**Projects:** {result['data']['projects']['count']} found\n"
-                for proj in result["data"]["projects"]["items"][:20]:  # Show first 20
-                    response += f"\n• **{proj['name']}** ({proj['status']})"
-                    response += f"\n  Dept: {proj['department']} | Owner: {proj['owner']}"
-                    if include_relationships and proj.get('okr_names'):
-                        response += f"\n  OKRs: {', '.join(proj['okr_names'][:2])}"
-                    response += "\n"
-                
-                if result["data"]["projects"]["count"] > 20:
-                    response += f"\n... and {result['data']['projects']['count'] - 20} more projects\n"
-            
-            if "okrs" in result["data"]:
-                response += f"\n**OKRs:** {result['data']['okrs']['count']} found\n"
-                for okr in result["data"]["okrs"]["items"][:10]:  # Show first 10
-                    response += f"\n• {okr['name']} ({okr['department']})\n"
-                
-                if result["data"]["okrs"]["count"] > 10:
-                    response += f"\n... and {result['data']['okrs']['count'] - 10} more OKRs\n"
-            
             return [TextContent(type="text", text=response)]
         
         else:
@@ -696,7 +661,7 @@ O1 - Enhance legal operations through AI and automation to increase strategic ca
     
     except Exception as e:
         error_msg = f"Error executing {name}: {str(e)}"
-        print(error_msg, file=sys.stderr)
+        logger.error(error_msg, exc_info=True)
         return [TextContent(type="text", text=error_msg)]
 
 

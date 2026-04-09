@@ -417,6 +417,220 @@ class MondayClient:
         
         return items
     
+    def get_complete_portfolio_data(self, board_type: str, limit: int = 100) -> Dict:
+        """
+        Fetch ALL data for a portfolio board in one comprehensive query
+        
+        Args:
+            board_type: Portfolio board type (e.g., 'proddev_portfolio')
+            limit: Maximum items per page (default 100)
+        
+        Returns:
+            Dict with structure:
+            {
+                'board_id': str,
+                'board_name': str,
+                'department': str,
+                'items': List[Dict],  # All parent items with nested subitems
+                'total_items': int,
+                'total_subitems': int
+            }
+        """
+        board_id = self.boards.get(board_type)
+        if not board_id:
+            raise ValueError(f"Board type '{board_type}' not configured or board ID not set")
+        
+        department = self.get_department_from_board_type(board_type)
+        
+        query = f"""
+        query {{
+        boards(ids: [{board_id}]) {{
+            id
+            name
+            items_page(limit: {limit}) {{
+            cursor
+            items {{
+                id
+                name
+                created_at
+                column_values {{
+                id
+                type
+                text
+                value
+                ... on StatusValue {{
+                    label
+                    index
+                }}
+                ... on PeopleValue {{
+                    persons_and_teams {{
+                    id
+                    kind
+                    }}
+                }}
+                ... on DateValue {{
+                    date
+                }}
+                ... on BoardRelationValue {{
+                    linked_items {{
+                    id
+                    name
+                    }}
+                }}
+                }}
+                subitems {{
+                id
+                name
+                column_values {{
+                    id
+                    type
+                    text
+                    value
+                    ... on StatusValue {{
+                    label
+                    index
+                    }}
+                    ... on MirrorValue {{
+                    display_value
+                    }}
+                    ... on BoardRelationValue {{
+                    linked_items {{
+                        id
+                        name
+                    }}
+                    }}
+                    ... on PeopleValue {{
+                    persons_and_teams {{
+                        id
+                        kind
+                    }}
+                    }}
+                    ... on DateValue {{
+                    date
+                    }}
+                }}
+                }}
+            }}
+            }}
+        }}
+        }}
+        """
+        
+        result = self._make_request(query)
+        board_data = result['data']['boards'][0]
+        items = board_data['items_page']['items']
+        
+        # Count subitems
+        total_subitems = sum(len(item.get('subitems', [])) for item in items)
+        
+        return {
+            'board_id': board_data['id'],
+            'board_name': board_data['name'],
+            'department': department,
+            'items': items,
+            'total_items': len(items),
+            'total_subitems': total_subitems
+        }
+    
+    
+    def get_complete_okr_data(self, board_type: str, limit: int = 100) -> Dict:
+        """
+        Fetch ALL OKR data (Objectives + Key Results) in one query
+        
+        Args:
+            board_type: OKR board type (e.g., 'proddev_okr')
+            limit: Maximum items per page (default 100)
+        
+        Returns:
+            Dict with structure:
+            {
+                'board_id': str,
+                'board_name': str,
+                'department': str,
+                'objectives': List[Dict],  # Parent items (Objectives)
+                'key_results': List[Dict],  # Subitems (Key Results)
+                'total_objectives': int,
+                'total_key_results': int
+            }
+        """
+        board_id = self.boards.get(board_type)
+        if not board_id:
+            raise ValueError(f"Board type '{board_type}' not configured or board ID not set")
+        
+        department = self.get_department_from_board_type(board_type)
+        
+        query = f"""
+        query {{
+        boards(ids: [{board_id}]) {{
+            id
+            name
+            items_page(limit: {limit}) {{
+            cursor
+            items {{
+                id
+                name
+                created_at
+                column_values {{
+                id
+                type
+                text
+                value
+                }}
+                subitems {{
+                id
+                name
+                column_values {{
+                    id
+                    type
+                    text
+                    value
+                }}
+                }}
+            }}
+            }}
+        }}
+        }}
+        """
+        
+        result = self._make_request(query)
+        board_data = result['data']['boards'][0]
+        items = board_data['items_page']['items']
+        
+        # Separate objectives (parent items) and key results (subitems)
+        objectives = []
+        key_results = []
+        
+        for item in items:
+            # Add objective
+            objective = {
+                'id': item['id'],
+                'name': item['name'],
+                'created_at': item['created_at'],
+                'column_values': item['column_values']
+            }
+            objectives.append(objective)
+            
+            # Add key results with parent reference
+            for subitem in item.get('subitems', []):
+                key_result = {
+                    'id': subitem['id'],
+                    'name': subitem['name'],
+                    'parent_objective_id': item['id'],
+                    'parent_objective_name': item['name'],
+                    'column_values': subitem['column_values']
+                }
+                key_results.append(key_result)
+        
+        return {
+            'board_id': board_data['id'],
+            'board_name': board_data['name'],
+            'department': department,
+            'objectives': objectives,
+            'key_results': key_results,
+            'total_objectives': len(objectives),
+            'total_key_results': len(key_results)
+        }
+    
     def get_item_by_id(self, item_id: str) -> Optional[Dict]:
         """Fetch a specific item by its ID"""
         query = f"""
