@@ -472,6 +472,8 @@ class MondayClient:
                     date
                 }}
                 ... on BoardRelationValue {{
+                    display_value
+                    linked_item_ids
                     linked_items {{
                     id
                     name
@@ -494,6 +496,8 @@ class MondayClient:
                     display_value
                     }}
                     ... on BoardRelationValue {{
+                    display_value
+                    linked_item_ids
                     linked_items {{
                         id
                         name
@@ -530,8 +534,7 @@ class MondayClient:
             'items': items,
             'total_items': len(items),
             'total_subitems': total_subitems
-        }
-    
+        }    
     
     def get_complete_okr_data(self, board_type: str, limit: int = 100) -> Dict:
         """

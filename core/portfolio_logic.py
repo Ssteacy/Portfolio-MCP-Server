@@ -197,6 +197,34 @@ class PortfolioLogic:
         
         return okr_ids
     
+    def debug_project_columns(self, project_name: str) -> Dict[str, Any]:
+        """Debug: Show all columns for a project"""
+        cache = self._get_cache()
+        
+        for dept_name, portfolio in cache['portfolios'].items():
+            for item in portfolio['items']:
+                if project_name.lower() in item.get('name', '').lower():
+                    # Show all column IDs and their values
+                    columns_debug = []
+                    for col in item.get('column_values', []):
+                        columns_debug.append({
+                            'id': col.get('id'),
+                            'title': col.get('title'),
+                            'type': col.get('type'),
+                            'text': col.get('text'),
+                            'display_value': col.get('display_value'),
+                            'value': col.get('value')
+                        })
+                    
+                    return {
+                        'project_name': item.get('name'),
+                        'department': dept_name,
+                        'total_columns': len(columns_debug),
+                        'columns': columns_debug
+                    }
+        
+        return {'error': f'No project found matching "{project_name}"'}
+    
     def _parse_path_to_green(self, column_values: List[Dict]) -> str:
         """Parse path to green column"""
         ptg = self._get_column_value(column_values, '18390087085__long_text_mky296ss')
@@ -589,53 +617,150 @@ class PortfolioLogic:
         Get all projects linked to a specific OKR (reverse lookup).
         
         Args:
-            okr_query: OKR identifier or partial name (e.g., 'KR3', 'Company O1', 'ProdDev KR5')
+            okr_query: OKR identifier with optional department prefix
+                    Examples: 'O1', 'Company O1', 'ProdDev KR3', 'KR2'
             department: Optional department filter for projects
         
         Returns:
             Dictionary with OKR name, department filter, total count, and matching projects
         """
+        from core.models import OKR_COLUMN_MAPPINGS
+        
         cache = self._get_cache()
         
-        okr_query_lower = okr_query.lower()
+        # Parse the OKR query to determine scope and search term
+        okr_query_lower = okr_query.lower().strip()
+        
+        # Determine OKR scope (company vs department) and type (objective vs KR)
+        okr_scope = None  # 'company_objective', 'company_kr', 'dept_objective', 'dept_kr'
+        search_term = okr_query  # What to search for in display_value
+        target_department = None  # Which department's OKRs to search (for dept objectives/KRs)
+        
+        # Check for explicit department prefix
+        if okr_query_lower.startswith('company '):
+            search_term = okr_query[8:].strip()  # Remove 'company ' prefix
+            if 'kr' in search_term.lower() or 'key result' in search_term.lower():
+                okr_scope = 'company_kr'
+            else:
+                okr_scope = 'company_objective'
+        elif okr_query_lower.startswith('proddev '):
+            search_term = okr_query[8:].strip()
+            target_department = 'proddev'
+            if 'kr' in search_term.lower() or 'key result' in search_term.lower():
+                okr_scope = 'dept_kr'
+            else:
+                okr_scope = 'dept_objective'
+        elif okr_query_lower.startswith('secit '):
+            search_term = okr_query[6:].strip()
+            target_department = 'secit'
+            if 'kr' in search_term.lower() or 'key result' in search_term.lower():
+                okr_scope = 'dept_kr'
+            else:
+                okr_scope = 'dept_objective'
+        elif okr_query_lower.startswith('finops '):
+            search_term = okr_query[7:].strip()
+            target_department = 'finops'
+            if 'kr' in search_term.lower() or 'key result' in search_term.lower():
+                okr_scope = 'dept_kr'
+            else:
+                okr_scope = 'dept_objective'
+        elif okr_query_lower.startswith('field '):
+            search_term = okr_query[6:].strip()
+            target_department = 'field'
+            if 'kr' in search_term.lower() or 'key result' in search_term.lower():
+                okr_scope = 'dept_kr'
+            else:
+                okr_scope = 'dept_objective'
+        elif okr_query_lower.startswith('people '):
+            search_term = okr_query[7:].strip()
+            target_department = 'people'
+            if 'kr' in search_term.lower() or 'key result' in search_term.lower():
+                okr_scope = 'dept_kr'
+            else:
+                okr_scope = 'dept_objective'
+        elif okr_query_lower.startswith('marketing '):
+            search_term = okr_query[10:].strip()
+            target_department = 'marketing'
+            if 'kr' in search_term.lower() or 'key result' in search_term.lower():
+                okr_scope = 'dept_kr'
+            else:
+                okr_scope = 'dept_objective'
+        elif okr_query_lower.startswith('legal '):
+            search_term = okr_query[6:].strip()
+            target_department = 'legal'
+            if 'kr' in search_term.lower() or 'key result' in search_term.lower():
+                okr_scope = 'dept_kr'
+            else:
+                okr_scope = 'dept_objective'
+        
         results = []
         matched_okr_name = None
         
         # Search through all portfolios
-        for dept_name, portfolio in cache['portfolios'].items():  # ✅ Fixed
-            # Apply department filter if specified
-            if department and dept_name != department:
+        for dept_name, portfolio in cache['portfolios'].items():
+            # Apply department filter if specified (for projects, not OKRs)
+            if department and dept_name.lower() != department.lower():
                 continue
             
+            # Get the portfolio board type (e.g., 'proddev_portfolio')
+            portfolio_type = f"{dept_name.lower()}_portfolio"
+            column_mapping = OKR_COLUMN_MAPPINGS.get(portfolio_type, {})
+            
             for item in portfolio['items']:
-                okr_links = item.get('okr_links', '')
+                # Track matched OKR links for this project
+                matched_links = []
                 
-                # Skip if no OKR links
-                if not okr_links:
-                    continue
+                for col in item.get('column_values', []):
+                    # Check if it's a board_relation column with display_value
+                    if col.get('type') == 'board_relation':
+                        col_id = col.get('id')
+                        display_value = col.get('display_value', '')
+                        
+                        if not display_value:
+                            continue
+                        
+                        # Determine the OKR type for this column
+                        col_okr_type = column_mapping.get(col_id)
+                        
+                        # Check if this column matches our scope filter
+                        scope_match = True
+                        if okr_scope:
+                            # If we have a scope, the column must match
+                            if col_okr_type != okr_scope:
+                                scope_match = False
+                            
+                            # For dept objectives/KRs, also check department match
+                            if okr_scope in ['dept_objective', 'dept_kr'] and target_department:
+                                # Only match if this is the target department's portfolio
+                                if dept_name.lower() != target_department.lower():
+                                    scope_match = False
+                        
+                        # Check if the search term matches and scope is correct
+                        if scope_match and search_term.lower() in display_value.lower():
+                            matched_links.append(display_value)
+                            if not matched_okr_name:
+                                matched_okr_name = display_value
                 
-                # Check if the OKR query matches any of the linked OKRs
-                if okr_query_lower in okr_links.lower():
-                    # Store the first matched OKR name for display
-                    if not matched_okr_name:
-                        matched_okr_name = okr_query
-                    
+                # If we found matching OKR links, add this project to results
+                if matched_links:
                     results.append({
                         'name': item.get('name', 'Unnamed'),
-                        'department': dept_name,  # ✅ Use dept_name from loop
-                        'status': item.get('status', 'Unknown'),
-                        'owner': item.get('owner', 'Unassigned'),
-                        'tier': item.get('tier', 'Unknown'),
-                        'okr_links': okr_links
+                        'department': dept_name,
+                        'status': self._parse_status(item.get('column_values', [])),
+                        'owner': self._parse_owner(item.get('column_values', [])),
+                        'tier': self._get_column_value(item.get('column_values', []), 'dropdown_mksq3s8t') or 'Not Set',
+                        'okr_links': ', '.join(matched_links)
                     })
         
-        if not matched_okr_name:
+        if not results:
             return {
-                'error': f"No projects found linked to OKR matching '{okr_query}'. Try a different search term (e.g., 'KR3', 'Company O1', 'Customer Trust')."
+                'error': f"No projects found linked to OKR matching '{okr_query}'. Try a different search term (e.g., 'O1', 'Company KR3', 'ProdDev O2')."
             }
         
         return {
-            'okr_name': okr_query,
+            'okr_name': matched_okr_name or okr_query,
+            'okr_scope': okr_scope or 'all',
+            'target_department': target_department,
             'department_filter': department,
             'total_count': len(results),
             'projects': results

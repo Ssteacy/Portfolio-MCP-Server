@@ -207,6 +207,20 @@ async def list_tools() -> List[Tool]:
                 "properties": {},
                 "required": []
             }
+        ),
+        Tool(
+            name="debug_project_columns",
+            description="DEBUG: Show all column data for a specific project",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_name": {
+                        "type": "string",
+                        "description": "Project name to debug"
+                    }
+                },
+                "required": ["project_name"]
+            }
         )
     ]
 
@@ -295,6 +309,12 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
   • Milestones: {result['milestones_count']}
 """
             return [TextContent(type="text", text=response)]
+        
+        elif name == "debug_project_columns":
+            project_name = arguments.get("project_name", "")
+            result = portfolio.debug_project_columns(project_name)
+            
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
         
         elif name == "get_contributing_projects":
             project_name = arguments.get("project_name")

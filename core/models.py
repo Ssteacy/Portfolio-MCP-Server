@@ -14,6 +14,57 @@ class StatusColor(Enum):
     ORANGE = "orange"
 
 
+# OKR Column Mappings - maps board_relation column IDs to OKR types
+OKR_COLUMN_MAPPINGS = {
+    'company_portfolio': {
+        'board_relation_mkxv5m0t': 'company_objective',
+        'board_relation_mm0efvmg': 'company_kr',
+    },
+    'proddev_portfolio': {
+        'board_relation_mkxv5m0t': 'company_objective',
+        'board_relation_mm0pnjk4': 'company_kr',
+        'board_relation_mm0pp1zv': 'dept_objective',
+        'board_relation_mm0pntcx': 'dept_kr',
+    },
+    'secit_portfolio': {
+        'board_relation_mkxv5m0t': 'company_objective',
+        'board_relation_mm0eyrk5': 'company_kr',
+        'board_relation_mm0e1nwb': 'dept_objective',
+        'board_relation_mm0e9ydq': 'dept_kr',
+    },
+    'finops_portfolio': {
+        'board_relation_mkxv5m0t': 'company_objective',
+        'board_relation_mm0epkcf': 'company_kr',
+        'board_relation_mm0e4fe3': 'dept_objective',
+        'board_relation_mm0e57sy': 'dept_kr',
+    },
+    'field_portfolio': {
+        'board_relation_mkxv5m0t': 'company_objective',
+        'board_relation_mm0esg2h': 'company_kr',
+        'board_relation_mm0eq60r': 'dept_objective',
+        'board_relation_mm0ejhbb': 'dept_kr',
+    },
+    'people_portfolio': {
+        'board_relation_mkxv5m0t': 'company_objective',
+        'board_relation_mm0e754a': 'company_kr',
+        'board_relation_mm0e54k5': 'dept_objective',
+        'board_relation_mm0exydn': 'dept_kr',
+    },
+    'marketing_portfolio': {
+        'board_relation_mkxv5m0t': 'company_objective',
+        'board_relation_mm0ezyy8': 'company_kr',
+        'board_relation_mm0exaj1': 'dept_objective',
+        'board_relation_mm0ezk54': 'dept_kr',
+    },
+    'legal_portfolio': {
+        'board_relation_mkxv5m0t': 'company_objective',
+        'board_relation_mm0ex15n': 'company_kr',
+        'board_relation_mm0ezxz0': 'dept_objective',
+        'board_relation_mm0e60jy': 'dept_kr',
+    },
+}
+
+
 @dataclass
 class ProjectStatus:
     """Represents a portfolio project/program"""
