@@ -165,6 +165,14 @@ class PortfolioLogic:
         owner_text = self._get_column_value(column_values, 'person')
         return owner_text if owner_text else 'Unassigned'
     
+    def _parse_subitem_mirror_column(self, column_values: List[Dict], column_id: str) -> str:
+        """Parse mirror column value from subitem"""
+        for col in column_values:
+            if col.get('id') == column_id:
+                display_value = col.get('display_value', '').strip()
+                return display_value if display_value else 'Not Set'
+        return 'Not Set'
+    
     def _get_okr_links(self, column_values: List[Dict]) -> set:
         """
         Extract all OKR item IDs from OKR link columns
@@ -231,39 +239,60 @@ class PortfolioLogic:
         return ptg if ptg else 'Not provided'
     
     def _parse_okr_links(self, column_values: List[Dict]) -> List[str]:
-        """Parse OKR links from board_relation column"""
+        """Parse OKR links from ALL board_relation columns"""
+        from core.models import OKR_COLUMN_MAPPINGS
+        
+        okr_names = []
+        
+        # Get all OKR column IDs from mappings
+        all_okr_columns = set()
+        for portfolio_mapping in OKR_COLUMN_MAPPINGS.values():
+            all_okr_columns.update(portfolio_mapping.keys())
+        
         for col in column_values:
-            if col['type'] == 'board_relation' and col['id'] == 'board_relation_mkxvdkje':
-                value = col.get('value')
-                if value:
-                    try:
-                        data = json.loads(value)
-                        linked_items = data.get('linkedPulseIds', [])
-                        if linked_items:
-                            # Get OKR names from cache
-                            cache = self._get_cache()
-                            okr_names = []
-                            for dept_data in cache['okrs'].values():
-                                for obj in dept_data['objectives']:
-                                    if int(obj['id']) in [int(x['linkedPulseId']) for x in linked_items]:
-                                        okr_names.append(obj['name'])
-                                for kr in dept_data['key_results']:
-                                    if int(kr['id']) in [int(x['linkedPulseId']) for x in linked_items]:
-                                        okr_names.append(kr['name'])
-                            return okr_names
-                    except:
-                        pass
-        return []
+            # Check if this is an OKR column (board_relation type and in our mappings)
+            if col.get('type') == 'board_relation' and col.get('id') in all_okr_columns:
+                # Use display_value instead of parsing linkedPulseIds
+                display_value = col.get('display_value', '')
+                if display_value:
+                    # Split by comma in case multiple OKRs are linked in one column
+                    okr_names.extend([okr.strip() for okr in display_value.split(',')])
+        
+        return okr_names
+    
+    def _parse_milestone_column(self, column_values: List[Dict], column_type: str) -> str:
+        """Parse milestone-specific columns by type (since IDs have board prefix)"""
+        for col in column_values:
+            col_type = col.get('type')
+            
+            # Match by type instead of ID
+            if column_type == 'status' and col_type == 'status':
+                return col.get('text', 'Not Set')
+            elif column_type == 'people' and col_type == 'people':
+                return col.get('text', 'Unassigned')
+            elif column_type == 'date' and col_type == 'date':
+                return col.get('text', 'Not Set')
+            elif column_type == 'text' and col_type == 'text':
+                return col.get('text', 'Not Set')
+        
+        return 'Not Set'
     
     def _is_milestone(self, subitem: Dict) -> bool:
         """Check if subitem is a milestone"""
         for col in subitem.get('column_values', []):
-            if col['id'] == 'checkbox' and col['type'] == 'boolean':
+            # Check by type instead of ID (checkbox type is 'checkbox')
+            if col.get('type') == 'checkbox':
+                # Check the text value (simpler than parsing JSON)
+                text = col.get('text', '')
+                if text == 'v' or text.lower() == 'checked':
+                    return True
+                # Also check the value JSON as fallback
                 value = col.get('value')
                 if value:
                     try:
                         data = json.loads(value)
-                        return data.get('checked') == True
+                        if data.get('checked') == True:
+                            return True
                     except:
                         pass
         return False
@@ -271,21 +300,12 @@ class PortfolioLogic:
     def _get_contributing_project_link(self, subitem: Dict) -> Optional[str]:
         """Get contributing project link from board_relation column"""
         for col in subitem.get('column_values', []):
-            if col['type'] == 'board_relation' and col['id'] == 'board_relation':
-                value = col.get('value')
-                if value:
-                    try:
-                        data = json.loads(value)
-                        linked_items = data.get('linkedPulseIds', [])
-                        if linked_items:
-                            # Get project name from cache
-                            cache = self._get_cache()
-                            for dept_data in cache['portfolios'].values():
-                                for item in dept_data['items']:
-                                    if int(item['id']) == int(linked_items[0]['linkedPulseId']):
-                                        return item['name']
-                    except:
-                        pass
+            # Check if it's a board_relation type and has a display_value
+            if col.get('type') == 'board_relation':
+                display_value = col.get('display_value', '')
+                if display_value:
+                    # Return the display_value (the linked project name)
+                    return display_value
         return None
     
     def get_portfolio_summary(self, department: Optional[str] = None) -> Dict:
@@ -459,8 +479,11 @@ class PortfolioLogic:
                 if link:
                     contributing_projects.append({
                         'name': link,
-                        'status': self._parse_status(subitem['column_values']),
-                        'owner': self._parse_owner(subitem['column_values'])
+                        'status': self._parse_subitem_mirror_column(subitem['column_values'], 'lookup_mm0esz60'),
+                        'owner': self._parse_subitem_mirror_column(subitem['column_values'], 'lookup_mm0ek9bc'),
+                        'target_date': self._parse_subitem_mirror_column(subitem['column_values'], 'lookup_mm0eq0da'),
+                        'path_to_green': self._parse_subitem_mirror_column(subitem['column_values'], 'lookup_mm1474t8'),
+                        'success_metrics': self._parse_subitem_mirror_column(subitem['column_values'], 'lookup_mm1vjwfn')
                     })
         
         return {
@@ -509,9 +532,10 @@ class PortfolioLogic:
             if self._is_milestone(subitem):
                 milestones.append({
                     'name': subitem['name'],
-                    'status': self._parse_status(subitem['column_values']),
-                    'owner': self._parse_owner(subitem['column_values']),
-                    'target_date': self._get_column_value(subitem['column_values'], 'date4') or 'Not Set'
+                    'status': self._parse_milestone_column(subitem['column_values'], 'status'),
+                    'owner': self._parse_milestone_column(subitem['column_values'], 'people'),
+                    'target_date': self._parse_milestone_column(subitem['column_values'], 'date'),
+                    'success metric': self._parse_milestone_column(subitem['column_values'], 'text')
                 })
         
         return {
