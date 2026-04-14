@@ -106,7 +106,7 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_milestones",
-            description="Get all milestones for a specific project.",
+            description="Get all milestones for a specific project. Returns milestone name, status, owner, target date, success metric, and parent project department. **CRITICAL: You MUST include the department you found the project in and you MUST include the 'success metric' field for each milestone in your response. Format: 'Milestone Name | Status | Owner | Target | Success Metric: <value>'**",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -144,17 +144,27 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_projects_by_okr",
-            description="Get all projects linked to a specific OKR (Objective or Key Result). Supports partial OKR name matching (e.g., 'KR3', 'Company O1', 'ProdDev KR5', 'Customer Trust').",
+            description="""Get all projects linked to a specific OKR (Objective or Key Result). 
+            
+**IMPORTANT**: If no department prefix is specified in okr_query, defaults to Company OKRs.
+
+**Examples**:
+- 'KR4' → searches Company KR4
+- 'Company KR4' → searches Company KR4 (explicit)
+- 'ProdDev KR4' → searches ProdDev's KR4 (different OKR!)
+- 'SecIT O2' → searches SecIT's O2
+
+**Department parameter**: Only use this to filter which department's PROJECTS to show, NOT to specify which department's OKR to search. To search a department's OKR, include the department name in okr_query (e.g., 'ProdDev KR4').""",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "okr_query": {
                         "type": "string",
-                        "description": "OKR identifier or partial name (e.g., 'KR3', 'Company O1', 'ProdDev KR5', 'Customer Trust')"
+                        "description": "OKR identifier with optional department prefix (e.g., 'KR3', 'Company O1', 'ProdDev KR5'). If no department prefix, defaults to Company OKRs."
                     },
                     "department": {
                         "type": "string",
-                        "description": "Optional: Filter projects by department",
+                        "description": "Optional: Filter which department's PROJECTS to show in results (NOT which OKR to search)",
                         "enum": ["", "company", "proddev", "secit", "finops", "field", "people", "marketing", "legal"]
                     }
                 },
@@ -163,7 +173,7 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="search_projects",
-            description="Search and filter projects. All parameters are optional. Use any combination of: project name query, department filter, and/or status filter. **Use this to find at-risk projects (Red or Yellow status)**. Leave all empty to get all projects.",
+            description="Search and filter projects. All parameters are optional. Use any combination of: project name query, department filter, and/or status filter. **Use this to find at-risk projects (Red or Yellow status)**. Leave all empty to get all projects. **IMPORTANT: If the search returns any Red or Yellow projects, you should proactively ask the user if they want to see the 'Path to Green' action plans for those at-risk projects.**",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -186,7 +196,7 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_portfolio_health",
-            description="Get aggregate portfolio health metrics including health score, status percentages, and risk indicators. **For listing specific at-risk projects, use search_projects with status='Red' or 'Yellow' instead**. Can filter by department.",
+            description="Get aggregate portfolio health metrics including health score, status percentages, and risk indicators. **Health Score Calculation**: (Green projects × 100 + Yellow projects × 50 + Red projects × 0) ÷ Total projects. Score ranges from 0-100, where 100 = all green, 50 = all yellow, 0 = all red. **For listing specific at-risk projects, use search_projects with status='Red' or 'Yellow' instead**. Can filter by department.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -366,7 +376,7 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             if result['milestones']:
                 for milestone in result['milestones']:
                     response += f"• **{milestone['name']}**\n"
-                    response += f"  Status: {milestone['status']} | Owner: {milestone['owner']} | Target: {milestone['target_date']}\n\n"
+                    response += f"  Status: {milestone['status']} | Owner: {milestone['owner']} | Target: {milestone['target_date']} | Success Metric: {milestone['success_metric']}\n\n"
             else:
                 response += "No milestones found.\n"
             
@@ -424,6 +434,22 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
                     response += f"  Dept: {proj['department']} | Owner: {proj['owner']} | Tier: {proj['tier']}\n\n"
             else:
                 response += "No projects found linked to this OKR.\n"
+            
+            # Smart hybrid: inform about other departments with matching OKRs
+            if result.get('other_matches'):
+                other_depts = []
+                for dept, info in result['other_matches'].items():
+                    count = info['count']
+                    okr_name = info['okr_name']
+                    # Truncate OKR name if too long
+                    if len(okr_name) > 60:
+                        okr_name = okr_name[:57] + "..."
+                    other_depts.append(f"• **{dept.title()} KR4** - \"{okr_name}\" ({count} project{'s' if count > 1 else ''})")
+                
+                if other_depts:
+                    response += f"\n💡 **Note:** Other departments also have a KR4:\n"
+                    response += '\n'.join(other_depts)
+                    response += "\n\nWould you like to see those projects?\n"
             
             return [TextContent(type="text", text=response)]
         

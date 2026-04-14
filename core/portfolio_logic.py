@@ -308,6 +308,23 @@ class PortfolioLogic:
                     return display_value
         return None
     
+    def _normalize_okr_query(self, query: str) -> str:
+        """Normalize OKR query to handle common variations"""
+        import re
+        
+        query = query.strip()
+        
+        # Replace leading zeros with letter O (e.g., "01" → "O1", "Company 01" → "Company O1")
+        query = re.sub(r'\b0(\d+)\b', r'O\1', query)
+        
+        # Handle "Objective 1" → "O1"
+        query = re.sub(r'\bObjective\s+(\d+)\b', r'O\1', query, flags=re.IGNORECASE)
+        
+        # Handle "Key Result 3" → "KR3"
+        query = re.sub(r'\bKey\s+Result\s+(\d+)\b', r'KR\1', query, flags=re.IGNORECASE)
+        
+        return query
+    
     def get_portfolio_summary(self, department: Optional[str] = None) -> Dict:
         """
         Get portfolio summary from cache
@@ -535,7 +552,7 @@ class PortfolioLogic:
                     'status': self._parse_milestone_column(subitem['column_values'], 'status'),
                     'owner': self._parse_milestone_column(subitem['column_values'], 'people'),
                     'target_date': self._parse_milestone_column(subitem['column_values'], 'date'),
-                    'success metric': self._parse_milestone_column(subitem['column_values'], 'text')
+                    'success_metric': self._parse_milestone_column(subitem['column_values'], 'text')
                 })
         
         return {
@@ -636,6 +653,78 @@ class PortfolioLogic:
             'total_count': len(results)
         }
     
+    def _check_other_departments_for_okr(self, okr_query: str, exclude_results: list) -> Dict[str, Dict[str, any]]:
+        """
+        Check if other departments have projects linked to the same OKR query.
+        Used for smart hybrid OKR search.
+        
+        Args:
+            okr_query: The OKR search term (e.g., 'KR4')
+            exclude_results: List of projects already found (to avoid duplicates)
+        
+        Returns:
+            Dict mapping department names to {'count': int, 'okr_name': str}
+        """
+        from core.models import OKR_COLUMN_MAPPINGS
+        
+        cache = self._get_cache()
+        other_matches = {}
+        
+        # Extract project IDs we've already found
+        exclude_ids = {proj.get('name') + proj.get('department') for proj in exclude_results}
+        
+        # Search all departments
+        all_departments = ['company', 'proddev', 'secit', 'finops', 'field', 'people', 'marketing', 'legal']
+        
+        for dept in all_departments:
+            if dept not in cache['portfolios']:
+                continue
+            
+            dept_count = 0
+            dept_okr_name = None
+            portfolio = cache['portfolios'][dept]
+            portfolio_type = f"{dept}_portfolio"
+            column_mapping = OKR_COLUMN_MAPPINGS.get(portfolio_type, {})
+            
+            for item in portfolio['items']:
+                # Skip if we already counted this project
+                item_id = item.get('name') + dept
+                if item_id in exclude_ids:
+                    continue
+                
+                # Check if this project links to the OKR query
+                for col in item.get('column_values', []):
+                    if col.get('type') == 'board_relation':
+                        display_value = col.get('display_value', '')
+                        col_id = col.get('id')
+                        
+                        # Determine the OKR type for this column
+                        col_okr_type = column_mapping.get(col_id)
+                        
+                        # Only count if this is a DEPARTMENT OKR column (not company)
+                        # We want to find departments that have their OWN KR4, not projects linking to Company KR4
+                        if col_okr_type not in ['dept_objective', 'dept_kr']:
+                            continue
+                        
+                        if display_value and okr_query.lower() in display_value.lower():
+                            dept_count += 1
+                            # Capture ONLY the matching OKR line (not all linked OKRs)
+                            if not dept_okr_name:
+                                # Split by newline and find the line containing the search term
+                                for line in display_value.split('\n'):
+                                    if okr_query.lower() in line.lower():
+                                        dept_okr_name = line.strip()
+                                        break
+                            break  # Count each project only once
+            
+            if dept_count > 0:
+                other_matches[dept] = {
+                    'count': dept_count,
+                    'okr_name': dept_okr_name
+                }
+        
+        return other_matches
+    
     def get_projects_by_okr(self, okr_query: str, department: str = None) -> Dict[str, Any]:
         """
         Get all projects linked to a specific OKR (reverse lookup).
@@ -651,6 +740,9 @@ class PortfolioLogic:
         from core.models import OKR_COLUMN_MAPPINGS
         
         cache = self._get_cache()
+        
+        # Normalize the query to handle common variations
+        okr_query = self._normalize_okr_query(okr_query)
         
         # Parse the OKR query to determine scope and search term
         okr_query_lower = okr_query.lower().strip()
@@ -717,6 +809,14 @@ class PortfolioLogic:
             else:
                 okr_scope = 'dept_objective'
         
+        # DEFAULT TO COMPANY if no department prefix was specified
+        if okr_scope is None and target_department is None:
+            # Determine if it's an objective or KR based on the search term
+            if 'kr' in search_term.lower() or 'key result' in search_term.lower():
+                okr_scope = 'company_kr'
+            else:
+                okr_scope = 'company_objective'
+        
         results = []
         matched_okr_name = None
         
@@ -763,7 +863,9 @@ class PortfolioLogic:
                         if scope_match and search_term.lower() in display_value.lower():
                             matched_links.append(display_value)
                             if not matched_okr_name:
-                                matched_okr_name = display_value
+                                # Add department prefix for clarity
+                                dept_prefix = "Company" if okr_scope in ['company_objective', 'company_kr'] else target_department.title() if target_department else "Company"
+                                matched_okr_name = f"{dept_prefix} {display_value}"
                 
                 # If we found matching OKR links, add this project to results
                 if matched_links:
@@ -781,13 +883,33 @@ class PortfolioLogic:
                 'error': f"No projects found linked to OKR matching '{okr_query}'. Try a different search term (e.g., 'O1', 'Company KR3', 'ProdDev O2')."
             }
         
+        # Check for other departments with matching OKRs (smart hybrid)
+        other_matches = self._check_other_departments_for_okr(search_term, results)
+        
+        # Determine which department to exclude from other_matches
+        dept_to_exclude = None
+        if target_department:
+            # User specified a department OKR (e.g., "ProdDev KR4")
+            dept_to_exclude = target_department
+        elif department:
+            # User filtered by department (e.g., department="proddev")
+            dept_to_exclude = department.lower()
+        elif not target_department:
+            # No department specified, we defaulted to company
+            dept_to_exclude = 'company'
+        
+        # Remove the current department from other_matches
+        if dept_to_exclude and dept_to_exclude in other_matches:
+            del other_matches[dept_to_exclude]
+        
         return {
             'okr_name': matched_okr_name or okr_query,
             'okr_scope': okr_scope or 'all',
             'target_department': target_department,
             'department_filter': department,
             'total_count': len(results),
-            'projects': results
+            'projects': results,
+            'other_matches': other_matches  # New field for smart hybrid
         }
     
     def get_portfolio_health(self, department: Optional[str] = None) -> Dict:
