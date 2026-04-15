@@ -218,20 +218,6 @@ async def list_tools() -> List[Tool]:
                 "required": []
             }
         ),
-        Tool(
-            name="debug_project_columns",
-            description="DEBUG: Show all column data for a specific project",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "project_name": {
-                        "type": "string",
-                        "description": "Project name to debug"
-                    }
-                },
-                "required": ["project_name"]
-            }
-        )
     ]
 
 
@@ -319,12 +305,6 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
   • Milestones: {result['milestones_count']}
 """
             return [TextContent(type="text", text=response)]
-        
-        elif name == "debug_project_columns":
-            project_name = arguments.get("project_name", "")
-            result = portfolio.debug_project_columns(project_name)
-            
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
         
         elif name == "get_contributing_projects":
             project_name = arguments.get("project_name")
@@ -437,17 +417,36 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             
             # Smart hybrid: inform about other departments with matching OKRs
             if result.get('other_matches'):
+                # Extract OKR identifier from the matched OKR name (e.g., "Company KR2 - ..." → "KR2")
+                import re
+                okr_identifier = "this OKR"  # Default fallback
+                okr_name_parts = result['okr_name'].split(' - ', 1)
+                if okr_name_parts:
+                    # Extract just the identifier (e.g., "Company KR2" → "KR2", "Proddev O1" → "O1")
+                    first_part = okr_name_parts[0].strip()
+                    match = re.search(r'\b(O\d+|KR\d+)\b', first_part)
+                    if match:
+                        okr_identifier = match.group(1)
+                
                 other_depts = []
                 for dept, info in result['other_matches'].items():
                     count = info['count']
                     okr_name = info['okr_name']
+                    
+                    # Extract the OKR identifier from this department's OKR name
+                    # Search for the specific OKR identifier we're looking for
+                    dept_okr_id = okr_identifier  # Default to same identifier
+                    dept_match = re.search(rf'\b({re.escape(okr_identifier)})\b', okr_name, re.IGNORECASE)
+                    if dept_match:
+                        dept_okr_id = dept_match.group(1).upper()
+                    
                     # Truncate OKR name if too long
                     if len(okr_name) > 60:
                         okr_name = okr_name[:57] + "..."
-                    other_depts.append(f"• **{dept.title()} KR4** - \"{okr_name}\" ({count} project{'s' if count > 1 else ''})")
+                    other_depts.append(f"• **{dept.title()} {dept_okr_id}** - \"{okr_name}\" ({count} project{'s' if count > 1 else ''})")
                 
                 if other_depts:
-                    response += f"\n💡 **Note:** Other departments also have a KR4:\n"
+                    response += f"\n💡 **Note:** Other departments also have a {okr_identifier}:\n"
                     response += '\n'.join(other_depts)
                     response += "\n\nWould you like to see those projects?\n"
             

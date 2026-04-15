@@ -87,7 +87,7 @@ class ProjectStatus:
     proddev_objectives: List[str]
     proddev_key_results: List[str]
     
-    # Lead/Follow
+    # Subitems (milestones, contributing projects)
     subitems: List[Dict[str, Any]]
     
     # Metadata
@@ -147,13 +147,3 @@ class CapacityAllocation:
         if self.allocation_percentage:
             return self.allocation_percentage > threshold
         return False
-
-
-@dataclass
-class LeadFollowBreakdown:
-    """Lead/Follow project breakdown"""
-    lead_project: str
-    lead_project_id: str
-    lead_department: str  
-    follow_projects: List[Dict]
-    total_follow_count: int

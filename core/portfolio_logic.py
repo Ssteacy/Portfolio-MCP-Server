@@ -7,7 +7,6 @@ import json
 import os
 from typing import Dict, List, Optional
 from core.monday_client import MondayClient
-from core.models import LeadFollowBreakdown
 
 import time
 from typing import Dict, List, Optional, Any
@@ -204,34 +203,6 @@ class PortfolioLogic:
                         pass
         
         return okr_ids
-    
-    def debug_project_columns(self, project_name: str) -> Dict[str, Any]:
-        """Debug: Show all columns for a project"""
-        cache = self._get_cache()
-        
-        for dept_name, portfolio in cache['portfolios'].items():
-            for item in portfolio['items']:
-                if project_name.lower() in item.get('name', '').lower():
-                    # Show all column IDs and their values
-                    columns_debug = []
-                    for col in item.get('column_values', []):
-                        columns_debug.append({
-                            'id': col.get('id'),
-                            'title': col.get('title'),
-                            'type': col.get('type'),
-                            'text': col.get('text'),
-                            'display_value': col.get('display_value'),
-                            'value': col.get('value')
-                        })
-                    
-                    return {
-                        'project_name': item.get('name'),
-                        'department': dept_name,
-                        'total_columns': len(columns_debug),
-                        'columns': columns_debug
-                    }
-        
-        return {'error': f'No project found matching "{project_name}"'}
     
     def _parse_path_to_green(self, column_values: List[Dict]) -> str:
         """Parse path to green column"""
@@ -707,14 +678,24 @@ class PortfolioLogic:
                             continue
                         
                         if display_value and okr_query.lower() in display_value.lower():
-                            dept_count += 1
                             # Capture ONLY the matching OKR line (not all linked OKRs)
+                            # Only capture the OKR name once (from the first matching project)
                             if not dept_okr_name:
-                                # Split by newline and find the line containing the search term
+                                # Split by newline and comma to handle both formats
+                                import re
+                                # Split by newlines first, then by commas
+                                lines = []
                                 for line in display_value.split('\n'):
-                                    if okr_query.lower() in line.lower():
-                                        dept_okr_name = line.strip()
+                                    lines.extend([l.strip() for l in line.split(',')])
+                                
+                                for line in lines:
+                                    line_stripped = line.strip()
+                                    # Check if the line contains the OKR query as a word boundary
+                                    # This matches "KR2" in "KR2 - ..." or "Company KR2 - ..." but not "KR27"
+                                    if re.search(rf'\b{re.escape(okr_query)}\b', line_stripped, re.IGNORECASE):
+                                        dept_okr_name = line_stripped
                                         break
+                            dept_count += 1
                             break  # Count each project only once
             
             if dept_count > 0:
