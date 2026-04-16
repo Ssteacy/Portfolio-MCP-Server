@@ -172,6 +172,64 @@ async def list_tools() -> List[Tool]:
             }
         ),
         Tool(
+            name="get_portfolio_changes",
+            description=(
+                "Get recent changes to portfolio projects from activity logs. "
+                "Shows what changed (status, dates, OKR links, etc.), when it changed, and who made the change. "
+                "Use this when the user asks about: recent changes, what's new, what happened, updates, "
+                "project deletions, status changes, timeline shifts, or wants a change summary for reviews. "
+                "Examples: 'What changed this week?', 'Show me recent ProdDev updates', 'Any red projects lately?'\n\n"
+                "PRESENTATION GUIDELINES: When presenting results to the user:\n"
+                "- Group related changes intelligently (e.g., if a project was created then deleted, say 'removed and then re-added')\n"
+                "- For projects with multiple OKR changes, say 'various changes to linked OKRs' and mention 1-2 key examples\n"
+                "- Highlight critical changes first (status → Red/Yellow, major date slips)\n"
+                "- Include a brief summary for EACH project that had changes, not just the critical ones\n"
+                "- Use clear project-by-project structure so users can scan for specific projects\n"
+                "- Balance conciseness with completeness - synthesize intelligently but don't skip projects"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "days_back": {
+                        "type": "integer",
+                        "description": (
+                            "Number of days to look back for changes. Default is 30 days. "
+                            "Use 7 for 'this week', 14 for 'last two weeks', 30 for 'this month', "
+                            "90 for 'this quarter'. If user says 'recent' without specifics, use default."
+                        ),
+                        "default": 30
+                    },
+                    "department": {
+                        "type": "string",
+                        "description": (
+                            "Filter changes to a specific department's portfolio. "
+                            "Leave empty/null for all departments. "
+                            "Use 'proddev' for Product Development, 'secit' for Security & IT, "
+                            "'finops' for Finance & Operations, 'field' for Field Operations, "
+                            "'people' for People & Culture, 'marketing', 'legal', or 'company' for company-wide OKRs."
+                        ),
+                        "enum": ["proddev", "secit", "finops", "field", "people", "marketing", "legal", "company"]
+                    },
+                    "change_types": {
+                        "type": "array",
+                        "description": (
+                            "Filter to specific types of changes. Leave empty for all changes. "
+                            "Options: 'status' (Red/Yellow/Green changes), 'new' (newly created projects), "
+                            "'deleted' (removed projects), 'dates' (Target Date or Timeline changes), "
+                            "'okr_links' (OKR connections added/removed), 'path_to_green' (mitigation plan updates), "
+                            "'moved' (group changes), 'owner' (PM changes), 'tier' (priority changes). "
+                            "Use when user asks specifically about one type, e.g., 'show me status changes' or 'any deleted projects?'"
+                        ),
+                        "items": {
+                            "type": "string",
+                            "enum": ["status", "new", "deleted", "dates", "okr_links", "path_to_green", "moved", "owner", "tier"]
+                        }
+                    }
+                },
+                "required": []
+            }
+        ),
+        Tool(
             name="search_projects",
             description="Search and filter projects. All parameters are optional. Use any combination of: project name query, department filter, and/or status filter. **Use this to find at-risk projects (Red or Yellow status)**. Leave all empty to get all projects. **IMPORTANT: If the search returns any Red or Yellow projects, you should proactively ask the user if they want to see the 'Path to Green' action plans for those at-risk projects.**",
             inputSchema={
@@ -473,6 +531,50 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
                     response += f"  Dept: {proj['department']} | Owner: {proj['owner']} | Tier: {proj['tier']}\n\n"
             else:
                 response += "No projects found matching your criteria.\n"
+            
+            return [TextContent(type="text", text=response)]
+        
+        elif name == "get_portfolio_changes":
+            days_back = arguments.get("days_back", 30)
+            department = arguments.get("department") or None
+            change_types = arguments.get("change_types") or None
+            
+            result = portfolio.get_portfolio_changes(
+                days_back=days_back,
+                department=department,
+                change_types=change_types
+            )
+            
+            if 'error' in result:
+                return [TextContent(type="text", text=result['error'])]
+            
+            # Format with emojis like the original
+            response = f"""**Portfolio Changes**
+
+        📅 **Date Range:** {result['date_range']['from'][:10]} to {result['date_range']['to'][:10]} ({result['date_range']['days_back']} days)
+        🏢 **Department:** {result['filters']['department'] or 'All'}
+        📊 **Total Changes:** {result['total_changes']} across {result['total_projects_changed']} projects
+
+        """
+            
+            if result['projects']:
+                for proj in result['projects']:
+                    response += f"\n🎯 {proj['project_name']}\n"
+                    for change in proj['changes']:
+                        who = change['who']
+                        what = change['what']
+                        from_val = change['from']
+                        to_val = change['to']
+                        
+                        # Simple format - let Gemini synthesize
+                        if from_val and to_val:
+                            response += f"  • {who} changed {what}: {from_val} → {to_val}\n"
+                        elif to_val:
+                            response += f"  • {who} set {what} → {to_val}\n"
+                        elif from_val:
+                            response += f"  • {who} removed {what} (was: {from_val})\n"
+            else:
+                response += "No changes found in this time period.\n"
             
             return [TextContent(type="text", text=response)]
         

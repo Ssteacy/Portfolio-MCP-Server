@@ -5,8 +5,12 @@ Handles all interactions with the Monday.com GraphQL API
 
 import os
 import requests
+import logging
 from typing import Dict, List, Optional
 from dotenv import load_dotenv
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -179,6 +183,56 @@ class MondayClient:
             raise Exception(f"GraphQL errors: {data['errors']}")
         
         return data
+    
+    def get_users(self, user_ids: List[str]) -> Dict[str, str]:
+        """
+        Get user details by IDs
+        
+        Args:
+            user_ids: List of user IDs to resolve
+        
+        Returns:
+            Dict mapping user_id -> user_name
+        """
+                
+        if not user_ids:
+            return {}
+        
+        # Filter out system user IDs (negative numbers)
+        real_user_ids = [uid for uid in user_ids if uid and str(uid).lstrip('-').isdigit() and int(uid) > 0]
+        
+        if not real_user_ids:
+            return {uid: "System" for uid in user_ids if uid and int(uid) < 0}
+        
+        query = """
+        query ($ids: [ID!]!) {
+            users (ids: $ids) {
+                id
+                name
+                email
+            }
+        }
+        """
+        
+        variables = {"ids": [int(uid) for uid in real_user_ids]}
+        
+        try:
+            result = self._make_request(query, variables)
+            user_map = {}
+            
+            for user in result.get('data', {}).get('users', []):
+                user_map[str(user['id'])] = user.get('name', user.get('email', 'Unknown'))
+            
+            # Add system users
+            for uid in user_ids:
+                if uid and int(uid) < 0:
+                    user_map[uid] = "System"
+            
+            return user_map
+        
+        except Exception as e:
+            logging.error(f"Error fetching users: {e}")
+            return {uid: f"User {uid}" for uid in user_ids}
     
     def get_board_items(self, board_type: str, limit: int = 500) -> List[Dict]:
         """
@@ -674,3 +728,62 @@ class MondayClient:
         items = result['data']['items']
         
         return items[0] if items else None
+    
+    def get_activity_logs(
+        self, 
+        board_id: str, 
+        from_date: Optional[str] = None,
+        to_date: Optional[str] = None,
+        limit: int = 250,
+        page: int = 1
+    ) -> Dict:
+        """
+        Fetch activity logs for a board with optional date filtering
+        
+        Args:
+            board_id: Monday.com board ID
+            from_date: ISO 8601 date string (e.g., '2026-03-15T00:00:00Z')
+            to_date: ISO 8601 date string (e.g., '2026-04-16T23:59:59Z')
+            limit: Number of logs to fetch (max 500, recommended 100-250 for rate limits)
+            page: Page number for pagination
+        
+        Returns:
+            Dict with structure:
+            {
+                'board_id': str,
+                'board_name': str,
+                'activity_logs': List[Dict],
+                'total_logs': int
+            }
+        """
+        # Build the query with optional date filters
+        from_filter = f', from: "{from_date}"' if from_date else ''
+        to_filter = f', to: "{to_date}"' if to_date else ''
+        
+        query = f"""
+        query {{
+        boards(ids: [{board_id}]) {{
+            id
+            name
+            activity_logs(limit: {limit}, page: {page}{from_filter}{to_filter}) {{
+            id
+            event
+            entity
+            data
+            created_at
+            account_id
+            user_id
+            }}
+        }}
+        }}
+        """
+        
+        result = self._make_request(query)
+        board_data = result['data']['boards'][0]
+        
+        return {
+            'board_id': board_data['id'],
+            'board_name': board_data['name'],
+            'activity_logs': board_data['activity_logs'],
+            'total_logs': len(board_data['activity_logs'])
+        }

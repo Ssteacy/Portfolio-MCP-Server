@@ -11,6 +11,9 @@ from core.monday_client import MondayClient
 import time
 from typing import Dict, List, Optional, Any
 from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Global in-memory cache
 _CACHE = {
@@ -622,6 +625,283 @@ class PortfolioLogic:
             },
             'results': results,
             'total_count': len(results)
+        }
+    
+    def get_portfolio_changes(
+        self,
+        days_back: int = 30,
+        department: Optional[str] = None,
+        change_types: Optional[List[str]] = None,
+        include_subitems: bool = False
+    ) -> Dict:
+        """
+        Get portfolio changes from activity logs
+        
+        Args:
+            days_back: Number of days to look back (default 30)
+            department: Optional department filter
+            change_types: Optional list of change types to filter:
+                ['status', 'new', 'deleted', 'dates', 'okr_links', 'path_to_green', 'moved', 'owner', 'tier']
+            include_subitems: Include subitem changes (milestones) - NOT YET IMPLEMENTED
+        
+        Returns:
+            Dict with changes grouped by project
+        """
+        from datetime import datetime, timedelta
+        import json
+        
+        # Calculate date range
+        to_date = datetime.utcnow()
+        from_date = to_date - timedelta(days=days_back)
+        
+        from_date_str = from_date.strftime('%Y-%m-%dT%H:%M:%SZ')
+        to_date_str = to_date.strftime('%Y-%m-%dT%H:%M:%SZ')
+        
+        # Determine which boards to query
+        if department:
+            dept_lower = department.lower()
+            board_type = f"{dept_lower}_portfolio"
+            board_id = self.client.boards.get(board_type)
+            if not board_id:
+                return {'error': f"Department '{department}' not found or board not configured"}
+            boards_to_query = [(dept_lower, board_id)]
+        else:
+            # Query all portfolio boards
+            boards_to_query = []
+            for dept in ['company', 'proddev', 'secit', 'finops', 'field', 'people', 'marketing', 'legal']:
+                board_type = f"{dept}_portfolio"
+                board_id = self.client.boards.get(board_type)
+                if board_id:
+                    boards_to_query.append((dept, board_id))
+        
+        # Column IDs we care about
+        TRACKED_COLUMNS = {
+            'status': 'Overall Status',
+            'date4': 'Target Date',
+            '18397281142__timerange_mm217rjj': 'Timeline',
+            '18390087085__long_text_mky296ss': 'Path to Green',
+            'person': 'Owner(s)',
+            'dropdown_mksq3s8t': 'Portfolio Tier',
+            'text4': 'Portfolio Tier (alt)',
+            # OKR columns (board_relation type)
+            'board_relation_mkxv5m0t': 'Company Objective',
+            'board_relation_mm0pnjk4': 'Company Key Results',
+            'board_relation_mm0pp1zv': 'Prod Dev Objective',
+            'board_relation_mm0pntcx': 'Prod Dev Key Result',
+        }
+        
+        # Event types we care about
+        TRACKED_EVENTS = {
+            'update_column_value': 'updated',
+            'create_pulse': 'created',
+            'delete_pulse': 'deleted',
+            'move_pulse_from_group': 'moved'
+        }
+        
+        # Collect all changes
+        all_changes = []
+        
+        for dept, board_id in boards_to_query:
+            try:
+                logs_data = self.client.get_activity_logs(
+                    board_id=board_id,
+                    from_date=from_date_str,
+                    to_date=to_date_str,
+                    limit=250
+                )
+                
+                for log in logs_data['activity_logs']:
+                    event = log['event']
+                    
+                    # Skip events we don't track
+                    if event not in TRACKED_EVENTS:
+                        continue
+                    
+                    # Parse the data JSON
+                    try:
+                        data = json.loads(log['data'])
+                    except:
+                        continue
+                    
+                    pulse_id = data.get('pulse_id')
+                    pulse_name = data.get('pulse_name')
+                    
+                    if not pulse_id or not pulse_name:
+                        continue
+                    
+                    # Determine change type
+                    change_type = None
+                    change_field = None
+                    old_value = None
+                    new_value = None
+                    
+                    if event == 'create_pulse':
+                        change_type = 'new'
+                        change_field = 'Project Created'
+                        new_value = pulse_name
+                    
+                    elif event == 'delete_pulse':
+                        change_type = 'deleted'
+                        change_field = 'Project Deleted'
+                        old_value = pulse_name
+                    
+                    elif event == 'move_pulse_from_group':
+                        change_type = 'moved'
+                        source_group = data.get('source_group', {}).get('title', 'Unknown')
+                        dest_group = data.get('dest_group', {}).get('title', 'Unknown')
+                        change_field = 'Group'
+                        old_value = source_group
+                        new_value = dest_group
+                    
+                    elif event == 'update_column_value':
+                        column_id = data.get('column_id')
+                        column_title = data.get('column_title', 'Unknown')
+                        column_type = data.get('column_type')
+                        
+                        # Determine change type based on column
+                        if column_id == 'status':
+                            change_type = 'status'
+                            change_field = 'Overall Status'
+                            old_value = data.get('previous_value', {}).get('label', {}).get('text') if data.get('previous_value') else None
+                            new_value = data.get('value', {}).get('label', {}).get('text') if data.get('value') else None
+                        
+                        elif column_id in ['date4', '18397281142__timerange_mm217rjj']:
+                            change_type = 'dates'
+                            change_field = column_title
+                            
+                            if column_id == 'date4':
+                                old_value = data.get('previous_value', {}).get('date') if data.get('previous_value') else None
+                                new_value = data.get('value', {}).get('date') if data.get('value') else None
+                            else:  # Timeline
+                                prev = data.get('previous_value', {})
+                                curr = data.get('value', {})
+                                old_value = f"{prev.get('from')} to {prev.get('to')}" if prev and prev.get('from') else None
+                                new_value = f"{curr.get('from')} to {curr.get('to')}" if curr and curr.get('from') else None
+                        
+                        elif column_id == '18390087085__long_text_mky296ss':
+                            change_type = 'path_to_green'
+                            change_field = 'Path to Green'
+                            old_value = data.get('previous_value', {}).get('value') if data.get('previous_value') else None
+                            new_value = data.get('value', {}).get('value') if data.get('value') else None
+                        
+                        elif column_type == 'board-relation':
+                            change_type = 'okr_links'
+                            change_field = column_title
+                            old_value = data.get('previous_textual_value')
+                            new_value = data.get('textual_value')
+                        
+                        elif column_id == 'person':
+                            change_type = 'owner'
+                            change_field = 'Owner(s)'
+                            old_value = None  # Not easily parseable from activity log
+                            new_value = data.get('textual_value')
+                        
+                        elif column_id in ['dropdown_mksq3s8t', 'text4']:
+                            change_type = 'tier'
+                            change_field = 'Portfolio Tier'
+                            old_value = data.get('previous_textual_value')
+                            new_value = data.get('textual_value') or (data.get('value', {}).get('chosenValues', [{}])[0].get('name') if data.get('value') else None)
+                    
+                    # Apply change_types filter
+                    if change_types and change_type not in change_types:
+                        continue
+                    
+                    # Add to changes
+                    if change_type:
+                        # Debug: log the raw data for OKR changes
+                        if change_type == 'okr_links':
+                            logger.info(f"OKR change debug - column: {column_title}, prev: {data.get('previous_textual_value')}, curr: {data.get('textual_value')}, full data: {data}")
+
+                        all_changes.append({
+                            'project_id': str(pulse_id),
+                            'project_name': pulse_name,
+                            'department': dept,
+                            'change_type': change_type,
+                            'field': change_field,
+                            'old_value': old_value,
+                            'new_value': new_value,
+                            'timestamp': log['created_at'],
+                            'user_id': log.get('user_id')
+                        })
+            
+            except Exception as e:
+                logger.error(f"Error fetching activity logs for {dept}: {e}")
+                continue
+        
+        # Resolve all user IDs to names
+        all_user_ids = list(set([c['user_id'] for c in all_changes if c.get('user_id')]))
+        user_map = self.client.get_users(all_user_ids)
+        
+        # Group changes by project
+        changes_by_project = {}
+        for change in all_changes:
+            project_key = f"{change['project_name']} ({change['department']})"
+            if project_key not in changes_by_project:
+                changes_by_project[project_key] = {
+                    'project_name': change['project_name'],
+                    'project_id': change['project_id'],
+                    'department': change['department'],
+                    'changes': []
+                }
+            
+            # Simplified change record: what, from, to, who
+            changes_by_project[project_key]['changes'].append({
+                'what': change['field'],
+                'from': change['old_value'],
+                'to': change['new_value'],
+                'who': user_map.get(change['user_id'], 'Unknown')
+            })
+        
+        # Sort projects by number of changes (descending)
+        sorted_projects = sorted(
+            changes_by_project.values(),
+            key=lambda x: len(x['changes']),
+            reverse=True
+        )
+        
+        # Identify critical changes
+        critical_changes = []
+        for proj in sorted_projects:
+            for change in proj['changes']:
+                # Critical: Status changed to Red or Yellow
+                if 'Status' in change['what'] and change['to'] in ['Red', 'Yellow']:
+                    critical_changes.append({
+                        'project': proj['project_name'],
+                        'reason': f"Status changed to {change['to']}",
+                        'who': change['who']
+                    })
+                
+                # Critical: OKR link removed
+                if 'Objective' in change['what'] or 'Key Result' in change['what']:
+                    if change['from'] and not change['to']:
+                        critical_changes.append({
+                            'project': proj['project_name'],
+                            'reason': f"OKR link removed: {change['from']}",
+                            'who': change['who']
+                        })
+                
+                # Critical: Project deleted
+                if change['what'] == 'Project Deleted':
+                    critical_changes.append({
+                        'project': proj['project_name'],
+                        'reason': 'Project deleted',
+                        'who': change['who']
+                    })
+        
+        return {
+            'date_range': {
+                'from': from_date_str,
+                'to': to_date_str,
+                'days_back': days_back
+            },
+            'filters': {
+                'department': department,
+                'change_types': change_types
+            },
+            'total_changes': len(all_changes),
+            'total_projects_changed': len(sorted_projects),
+            'projects': sorted_projects,
+            'critical_changes': critical_changes
         }
     
     def _check_other_departments_for_okr(self, okr_query: str, exclude_results: list) -> Dict[str, Dict[str, any]]:
