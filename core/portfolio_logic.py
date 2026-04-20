@@ -151,10 +151,29 @@ class PortfolioLogic:
         return get_cached_data(self.client)
     
     def _get_column_value(self, column_values: List[Dict], column_id: str) -> Optional[str]:
-        """Extract column value by ID"""
+        """Extract column value by ID - handles JSON format for long_text columns"""
         for col in column_values:
             if col['id'] == column_id:
-                return col.get('text') or col.get('value')
+                text_value = col.get('text')
+                raw_value = col.get('value')
+                
+                # Prefer 'text' if available
+                if text_value:
+                    return text_value
+                
+                # Handle JSON format in 'value' (common for long_text columns when empty/recently edited)
+                if raw_value and isinstance(raw_value, str) and raw_value.strip().startswith('{'):
+                    try:
+                        import json
+                        data = json.loads(raw_value)
+                        # Extract 'text' field from JSON
+                        extracted_text = data.get('text', '').strip()
+                        return extracted_text if extracted_text else None
+                    except (json.JSONDecodeError, AttributeError, KeyError):
+                        # If JSON parsing fails, return raw value as-is
+                        pass
+                
+                return raw_value
         return None
     
     def _parse_status(self, column_values: List[Dict]) -> str:
@@ -298,7 +317,302 @@ class PortfolioLogic:
         query = re.sub(r'\bKey\s+Result\s+(\d+)\b', r'KR\1', query, flags=re.IGNORECASE)
         
         return query
-    
+
+    def _get_days_in_current_status(self, project_id: str, current_status: str, board_id: str) -> int:
+        """
+        Calculate how many days a project has been in its current status
+        
+        Args:
+            project_id: The project's item ID
+            current_status: The current status value (e.g., 'Red', 'Yellow')
+            board_id: The board ID to query activity logs
+        
+        Returns:
+            Number of days in current status, or 90+ if beyond log retention
+        """
+        from datetime import datetime, timedelta
+        
+        try:
+            # Query activity logs for the last 90 days, filtered to this specific item
+            to_date = datetime.utcnow()
+            from_date = to_date - timedelta(days=90)
+            
+            from_date_str = from_date.strftime('%Y-%m-%dT%H:%M:%SZ')
+            to_date_str = to_date.strftime('%Y-%m-%dT%H:%M:%SZ')
+            
+            logs_data = self.client.get_activity_logs(
+                board_id=board_id,
+                from_date=from_date_str,
+                to_date=to_date_str,
+                item_ids=[project_id],  # Filter to this specific item
+                column_ids=["status"],   # Only get status changes
+                limit=100
+            )
+            
+            # Find the most recent status change (any status change, not just TO current status)
+            most_recent_status_change = None
+            most_recent_status_value = None
+            
+            for log in logs_data.get('activity_logs', []):
+                if log.get('event') != 'update_column_value':
+                    continue
+                
+                try:
+                    data = json.loads(log['data']) if isinstance(log['data'], str) else log['data']
+                except:
+                    continue
+                
+                # Verify this is a status column change
+                if data.get('column_id') != 'status':
+                    continue
+                
+                # Parse the change date
+                try:
+                    change_date_str = log.get('created_at', '')
+                    
+                    # Monday.com returns timestamps as a long string where first 10 digits = Unix seconds
+                    if change_date_str.isdigit() and len(change_date_str) >= 10:
+                        from datetime import timezone
+                        # Take first 10 digits as seconds since epoch
+                        timestamp_seconds = int(change_date_str[:10])
+                        change_date = datetime.fromtimestamp(timestamp_seconds, tz=timezone.utc).replace(tzinfo=None)
+                    else:
+                        # Fallback: ISO 8601 format
+                        if '.' in change_date_str:
+                            change_date = datetime.strptime(change_date_str.split('.')[0], '%Y-%m-%dT%H:%M:%S')
+                        else:
+                            change_date = datetime.strptime(change_date_str.replace('Z', ''), '%Y-%m-%dT%H:%M:%S')
+                except Exception as e:
+                    logger.warning(f"Failed to parse date {log.get('created_at')}: {e}")
+                    continue
+                
+                # Track the most recent status change
+                if not most_recent_status_change or change_date > most_recent_status_change:
+                    most_recent_status_change = change_date
+                    # Extract the new status value
+                    value_data = data.get('value', {})
+                    if isinstance(value_data, str):
+                        try:
+                            value_data = json.loads(value_data)
+                        except:
+                            pass
+                    most_recent_status_value = value_data.get('label', {}).get('text') if isinstance(value_data, dict) else None
+            
+            # Calculate days since most recent status change
+            if most_recent_status_change:
+                # Verify the most recent change matches current status
+                if most_recent_status_value == current_status:
+                    days_diff = (datetime.utcnow() - most_recent_status_change).days
+                    return days_diff
+                else:
+                    # Most recent change was to a different status - something is wrong
+                    # This means the project changed status AFTER our activity log window
+                    # or the current status is stale
+                    logger.warning(f"Project {project_id}: Most recent status change was to '{most_recent_status_value}', but current status is '{current_status}'")
+                    return 0  # Assume very recent change
+            else:
+                # No status change found in last 90 days - been in this status for 90+ days
+                return 90
+        
+        except Exception as e:
+            logger.error(f"Error calculating days in status for project {project_id}: {e}")
+            return 0
+
+    def _get_contributing_projects_for_report(self, project_id: str) -> List[Dict[str, str]]:
+        """
+        Find all projects that depend on this project (contributing projects)
+        
+        Args:
+            project_id: The project's item ID
+        
+        Returns:
+            List of dicts with project name and department
+        """
+        cache = self._get_cache()
+        contributing = []
+        
+        # Search all portfolios for subitems that link to this project
+        for dept_name, portfolio in cache['portfolios'].items():
+            for item in portfolio['items']:
+                for subitem in item.get('subitems', []):
+                    # Skip milestones
+                    if self._is_milestone(subitem):
+                        continue
+                    
+                    # Check if this subitem links to our project
+                    for col in subitem.get('column_values', []):
+                        if col.get('type') == 'board_relation':
+                            value = col.get('value')
+                            if value:
+                                try:
+                                    parsed = json.loads(value) if isinstance(value, str) else value
+                                    if isinstance(parsed, dict) and 'linkedPulseIds' in parsed:
+                                        for linked in parsed['linkedPulseIds']:
+                                            if str(linked.get('linkedPulseId')) == str(project_id):
+                                                contributing.append({
+                                                    'name': item['name'],
+                                                    'department': dept_name
+                                                })
+                                                break
+                                except:
+                                    pass
+        
+        return contributing
+
+    def get_at_risk_projects_report(
+        self,
+        status_filter: Optional[List[str]] = None,
+        group_by: str = "department",
+        department: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get at-risk projects report with escalation context
+        
+        Args:
+            status_filter: List of statuses to include (default: ["Red"])
+                        Options: ["Red"], ["Yellow"], ["Red", "Yellow"]
+            group_by: How to group results - "department" or "okr" (default: "department")
+            department: Optional department filter
+        
+        Returns:
+            Dict with at-risk projects grouped and enriched with escalation context
+        """
+        from datetime import datetime
+        
+        # Default to Red only
+        if not status_filter:
+            status_filter = ["Red"]
+        
+        # Validate group_by
+        if group_by not in ["department", "okr"]:
+            return {'error': f"Invalid group_by value: {group_by}. Must be 'department' or 'okr'"}
+        
+        cache = self._get_cache()
+        
+        # Determine which departments to search
+        departments_to_search = [department.lower()] if department else cache['portfolios'].keys()
+        
+        # Collect all at-risk projects
+        at_risk_projects = []
+        
+        for dept in departments_to_search:
+            if dept not in cache['portfolios']:
+                continue
+            
+            portfolio = cache['portfolios'][dept]
+            board_id = portfolio['board_id']
+            
+            for item in portfolio['items']:
+                status = self._parse_status(item['column_values'])
+                
+                # Check if status matches filter
+                if status not in status_filter:
+                    continue
+                
+                # Get project details
+                project_id = item['id']
+                tier = self._get_column_value(item['column_values'], 'dropdown_mksq3s8t') or 'Not Set'
+                
+                # Calculate days in current status
+                days_in_status = self._get_days_in_current_status(project_id, status, board_id)
+                # Format days in status for display
+                if days_in_status == 0:
+                    days_text = "< 1 day"
+                elif days_in_status >= 90:
+                    days_text = "90+ days"
+                else:
+                    days_text = f"{days_in_status} days"
+                
+                # Get contributing projects (who depends on this)
+                contributing = self._get_contributing_projects_for_report(project_id)
+                
+                # Get OKR links
+                okr_links = self._parse_okr_links(item['column_values'])
+                
+                at_risk_projects.append({
+                    'name': item['name'],
+                    'id': project_id,
+                    'department': dept,
+                    'status': status,
+                    'tier': tier,
+                    'owner': self._parse_owner(item['column_values']),
+                    'target_date': self._get_column_value(item['column_values'], 'date4') or 'Not Set',
+                    'path_to_green': self._parse_path_to_green(item['column_values']),
+                    'okr_links': okr_links,
+                    'days_in_status': days_in_status,
+                    'days_in_status_text': days_text,
+                    'contributing_projects': contributing
+                })
+        
+        if not at_risk_projects:
+            return {
+                'message': f"No projects found with status: {', '.join(status_filter)}",
+                'filters': {
+                    'status_filter': status_filter,
+                    'department': department,
+                    'group_by': group_by
+                },
+                'total_count': 0
+            }
+        
+        # Sort projects: Tier 1 first, then by days_in_status (longest first)
+        tier_order = {'Department -Tier 1': 1, 'Department -Tier 2': 2, 'Department -Tier 3': 3, 'Not Set': 4}
+        at_risk_projects.sort(
+            key=lambda p: (tier_order.get(p['tier'], 99), -p['days_in_status'])
+        )
+        
+        # Group projects
+        grouped = {}
+        
+        if group_by == "department":
+            for proj in at_risk_projects:
+                dept_key = proj['department']
+                if dept_key not in grouped:
+                    grouped[dept_key] = []
+                grouped[dept_key].append(proj)
+        
+        elif group_by == "okr":
+            for proj in at_risk_projects:
+                if proj['okr_links']:
+                    for okr in proj['okr_links']:
+                        if okr not in grouped:
+                            grouped[okr] = []
+                        grouped[okr].append(proj)
+                else:
+                    # Projects with no OKR links
+                    if 'No OKR Links' not in grouped:
+                        grouped['No OKR Links'] = []
+                    grouped['No OKR Links'].append(proj)
+        
+        # Format output
+        formatted_groups = []
+        for group_name, projects in grouped.items():
+            formatted_groups.append({
+                'group_name': group_name,
+                'project_count': len(projects),
+                'projects': projects
+            })
+        
+        # Calculate summary stats
+        tier_1_count = sum(1 for p in at_risk_projects if 'Tier 1' in p['tier'])
+        long_red_count = sum(1 for p in at_risk_projects if p['days_in_status'] > 30)
+        
+        return {
+            'report_date': datetime.utcnow().strftime('%Y-%m-%d'),
+            'filters': {
+                'status_filter': status_filter,
+                'department': department,
+                'group_by': group_by
+            },
+            'summary': {
+                'total_at_risk': len(at_risk_projects),
+                'tier_1_count': tier_1_count,
+                'long_duration_count': long_red_count,
+                'departments_affected': len(set(p['department'] for p in at_risk_projects))
+            },
+            'groups': formatted_groups
+        }
+
     def get_portfolio_summary(self, department: Optional[str] = None) -> Dict:
         """
         Get portfolio summary from cache

@@ -230,6 +230,56 @@ async def list_tools() -> List[Tool]:
             }
         ),
         Tool(
+            name="get_at_risk_projects_report",
+            description=(
+                "Get a comprehensive at-risk projects report with escalation context. "
+                "Shows Red and/or Yellow projects with: days in current status, Path to Green, "
+                "OKR links, contributing projects (dependencies), owner, tier, and target dates. "
+                "Results are grouped by department or OKR and sorted by priority (Tier 1 first, then by duration). "
+                "Use this for: escalation meetings, executive reviews, risk assessments, or when the user asks "
+                "about 'at-risk projects', 'red projects', 'yellow projects', 'blocked projects', or 'what needs attention'. "
+                "Examples: 'Show me all red projects', 'What's at risk in ProdDev?', 'Give me an escalation report'"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "status_filter": {
+                        "type": "array",
+                        "description": (
+                            "List of statuses to include. Default: ['Red'] for critical projects only. "
+                            "Use ['Red', 'Yellow'] for all at-risk projects, or ['Yellow'] for yellow-only. "
+                            "Examples: ['Red'] = critical only, ['Red', 'Yellow'] = all at-risk, ['Yellow'] = warnings only"
+                        ),
+                        "items": {
+                            "type": "string",
+                            "enum": ["Red", "Yellow"]
+                        },
+                        "default": ["Red"]
+                    },
+                    "group_by": {
+                        "type": "string",
+                        "description": (
+                            "How to group the results. 'department' groups by department (default), "
+                            "'okr' groups by linked OKRs (useful for strategic reviews). "
+                            "Use 'department' for operational reviews, 'okr' for strategic alignment reviews."
+                        ),
+                        "enum": ["department", "okr"],
+                        "default": "department"
+                    },
+                    "department": {
+                        "type": "string",
+                        "description": (
+                            "Optional: Filter to a specific department's at-risk projects. "
+                            "Leave empty for all departments. Use when user asks about a specific department "
+                            "(e.g., 'What's at risk in ProdDev?')"
+                        ),
+                        "enum": ["", "company", "proddev", "secit", "finops", "field", "people", "marketing", "legal"]
+                    }
+                },
+                "required": []
+            }
+        ),
+        Tool(
             name="search_projects",
             description="Search and filter projects. All parameters are optional. Use any combination of: project name query, department filter, and/or status filter. **Use this to find at-risk projects (Red or Yellow status)**. Leave all empty to get all projects. **IMPORTANT: If the search returns any Red or Yellow projects, you should proactively ask the user if they want to see the 'Path to Green' action plans for those at-risk projects.**",
             inputSchema={
@@ -603,6 +653,93 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             
             return [TextContent(type="text", text=response)]
         
+        elif name == "get_at_risk_projects_report":
+            status_filter = arguments.get("status_filter") or ["Red"]
+            group_by = arguments.get("group_by", "department")
+            department = arguments.get("department") or None
+            
+            result = portfolio.get_at_risk_projects_report(
+                status_filter=status_filter,
+                group_by=group_by,
+                department=department
+            )
+            
+            if 'error' in result:
+                return [TextContent(type="text", text=result['error'])]
+            
+            if 'message' in result:
+                # No at-risk projects found
+                return [TextContent(type="text", text=result['message'])]
+            
+            # Format the report
+            response = f"""**At-Risk Projects Report**
+
+📅 **Report Date:** {result['report_date']}
+🎯 **Status Filter:** {', '.join(result['filters']['status_filter'])}
+🏢 **Department Filter:** {result['filters']['department'] or 'All'}
+📊 **Group By:** {result['filters']['group_by'].title()}
+
+**Summary:**
+  • Total At-Risk Projects: {result['summary']['total_at_risk']}
+  • Tier 1 Projects: {result['summary']['tier_1_count']}
+  • Long Duration (>30 days): {result['summary']['long_duration_count']}
+  • Departments Affected: {result['summary']['departments_affected']}
+
+---
+
+"""
+            
+            # Format each group
+            for group in result['groups']:
+                group_name = group['group_name']
+                project_count = group['project_count']
+                
+                response += f"\n## {group_name.upper()} ({project_count} project{'s' if project_count > 1 else ''})\n\n"
+                
+                for proj in group['projects']:
+                    # Project header with status emoji
+                    status_emoji = "🔴" if proj['status'] == "Red" else "🟡"
+                    response += f"{status_emoji} **{proj['name']}**\n"
+                    
+                    # Key details
+                    response += f"  • **Status:** {proj['status']} (for {proj['days_in_status_text']})\n"
+                    response += f"  • **Tier:** {proj['tier']}\n"
+                    response += f"  • **Owner:** {proj['owner']}\n"
+                    response += f"  • **Target Date:** {proj['target_date']}\n"
+                    
+                    # OKR links
+                    if proj['okr_links']:
+                        okr_list = ', '.join(proj['okr_links'][:2])  # Show first 2
+                        if len(proj['okr_links']) > 2:
+                            okr_list += f" (+{len(proj['okr_links']) - 2} more)"
+                        response += f"  • **OKR Links:** {okr_list}\n"
+                    else:
+                        response += f"  • **OKR Links:** None\n"
+                    
+                    # Path to Green
+                    ptg = proj['path_to_green']
+                    if ptg and ptg != 'Not provided':
+                        # Truncate if too long
+                        if len(ptg) > 150:
+                            ptg = ptg[:147] + "..."
+                        response += f"  • **Path to Green:** {ptg}\n"
+                    else:
+                        response += f"  • **Path to Green:** ⚠️ Not provided\n"
+                    
+                    # Contributing projects (dependencies)
+                    if proj['contributing_projects']:
+                        contrib_count = len(proj['contributing_projects'])
+                        contrib_list = ', '.join([f"{c['name']} ({c['department']})" for c in proj['contributing_projects'][:2]])
+                        if contrib_count > 2:
+                            contrib_list += f" (+{contrib_count - 2} more)"
+                        response += f"  • **⚠️ Blocks {contrib_count} project{'s' if contrib_count > 1 else ''}:** {contrib_list}\n"
+                    
+                    response += "\n"
+            
+            response += "\n---\n\n💡 **Next Steps:** Review Path to Green plans, escalate Tier 1 projects, and check dependencies.\n"
+            
+            return [TextContent(type="text", text=response)]
+        
         elif name == "get_portfolio_schema":
             # Return the schema/structure of the portfolio system
             response = """**Monday.com Portfolio System Schema**
@@ -792,6 +929,10 @@ O1 - Enhance legal operations through AI and automation to increase strategic ca
 - "Show me all contributing projects for PD Advance + Agents"
 - "List all completed projects" (use search_projects with status="Completed")
 - "Which proddev projects link to Customer Trust?" (use get_projects_by_okr with okr_query="Customer Trust", department="proddev")
+- "Show me all red projects" (use get_at_risk_projects_report with status_filter=["Red"])
+- "What's at risk in ProdDev?" (use get_at_risk_projects_report with department="proddev", status_filter=["Red", "Yellow"])
+- "Give me an escalation report" (use get_at_risk_projects_report)
+- "Show me yellow projects grouped by OKR" (use get_at_risk_projects_report with status_filter=["Yellow"], group_by="okr")
 
 🎯 **Pro Tips:**
 - Use **get_portfolio_schema** first to understand available OKRs and structure

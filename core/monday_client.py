@@ -734,16 +734,20 @@ class MondayClient:
         board_id: str, 
         from_date: Optional[str] = None,
         to_date: Optional[str] = None,
+        item_ids: Optional[List[str]] = None,
+        column_ids: Optional[List[str]] = None,
         limit: int = 250,
         page: int = 1
     ) -> Dict:
         """
-        Fetch activity logs for a board with optional date filtering
+        Fetch activity logs for a board with optional filtering
         
         Args:
             board_id: Monday.com board ID
             from_date: ISO 8601 date string (e.g., '2026-03-15T00:00:00Z')
             to_date: ISO 8601 date string (e.g., '2026-04-16T23:59:59Z')
+            item_ids: Optional list of item IDs to filter (e.g., ['123456', '789012'])
+            column_ids: Optional list of column IDs to filter (e.g., ['status', 'date4'])
             limit: Number of logs to fetch (max 500, recommended 100-250 for rate limits)
             page: Page number for pagination
         
@@ -756,16 +760,30 @@ class MondayClient:
                 'total_logs': int
             }
         """
-        # Build the query with optional date filters
+        # Build the query with optional filters
         from_filter = f', from: "{from_date}"' if from_date else ''
         to_filter = f', to: "{to_date}"' if to_date else ''
+        
+        # Add item_ids filter if provided
+        item_ids_filter = ''
+        if item_ids:
+            # Convert to comma-separated string of integers
+            item_ids_str = ', '.join(str(id) for id in item_ids)
+            item_ids_filter = f', item_ids: [{item_ids_str}]'
+        
+        # Add column_ids filter if provided
+        column_ids_filter = ''
+        if column_ids:
+            # Convert to comma-separated string of quoted column IDs
+            column_ids_str = ', '.join(f'"{col}"' for col in column_ids)
+            column_ids_filter = f', column_ids: [{column_ids_str}]'
         
         query = f"""
         query {{
         boards(ids: [{board_id}]) {{
             id
             name
-            activity_logs(limit: {limit}, page: {page}{from_filter}{to_filter}) {{
+            activity_logs(limit: {limit}, page: {page}{from_filter}{to_filter}{item_ids_filter}{column_ids_filter}) {{
             id
             event
             entity
