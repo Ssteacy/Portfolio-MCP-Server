@@ -53,7 +53,22 @@ async def list_tools() -> List[Tool]:
     return [
         Tool(
             name="get_portfolio_summary",
-            description="Get portfolio summary with total projects, status breakdown, and tier breakdown. Can filter by department.",
+            description=(
+                "📋 PORTFOLIO INVENTORY TOOL - Use this for structural/capacity questions about the portfolio. "
+                "Returns: total project counts, tier breakdown (Tier 1/2/3), milestone counts, status counts, "
+                "and department structure. Focuses on 'how much' and 'what's in the portfolio'. "
+                "\n\n"
+                "✅ USE THIS FOR:\n"
+                "- 'How many projects do we have?' / 'What's the tier breakdown?'\n"
+                "- 'How many Tier 1 projects?' / 'How many milestones?'\n"
+                "- 'Show me portfolio structure' / 'What departments have portfolios?'\n"
+                "- Capacity planning, resource allocation questions\n"
+                "\n"
+                "❌ DON'T USE FOR:\n"
+                "- Health scores or risk percentages (use get_portfolio_health)\n"
+                "- Listing specific projects (use search_projects)\n"
+                "- At-risk project analysis (use get_at_risk_projects_report)"
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -68,7 +83,21 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_project_details",
-            description="Get detailed information about a specific project including status, owner, OKR links, contributing projects, and milestones.",
+            description=(
+                "🔬 SINGLE PROJECT DEEP-DIVE TOOL - Use this to get comprehensive details about ONE specific project. "
+                "Returns: status, owner, OKR links, contributing projects (dependencies), milestones, target dates, "
+                "Path to Green, tier, timeline, and full project context. "
+                "\n\n"
+                "✅ USE THIS FOR:\n"
+                "- 'Tell me about Project X' / 'What's the status of Y?'\n"
+                "- 'Show me details for Z' / 'Who owns Project A?'\n"
+                "- Deep dive on a single project when user names it specifically\n"
+                "\n"
+                "❌ DON'T USE FOR:\n"
+                "- Multiple projects or lists (use search_projects)\n"
+                "- Risk analysis across portfolio (use get_at_risk_projects_report)\n"
+                "- Portfolio-wide metrics (use get_portfolio_health)"
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -174,18 +203,27 @@ async def list_tools() -> List[Tool]:
         Tool(
             name="get_portfolio_changes",
             description=(
-                "Get recent changes to portfolio projects from activity logs. "
+                "📅 ACTIVITY LOG & CHANGE TRACKING TOOL - Use this to see what changed in the portfolio over time. "
                 "Shows what changed (status, dates, OKR links, etc.), when it changed, and who made the change. "
-                "Use this when the user asks about: recent changes, what's new, what happened, updates, "
-                "project deletions, status changes, timeline shifts, or wants a change summary for reviews. "
-                "Examples: 'What changed this week?', 'Show me recent ProdDev updates', 'Any red projects lately?'\n\n"
-                "PRESENTATION GUIDELINES: When presenting results to the user:\n"
-                "- Group related changes intelligently (e.g., if a project was created then deleted, say 'removed and then re-added')\n"
-                "- For projects with multiple OKR changes, say 'various changes to linked OKRs' and mention 1-2 key examples\n"
+                "Returns activity log entries with before/after values for all tracked fields. "
+                "\n\n"
+                "✅ USE THIS FOR:\n"
+                "- 'What changed this week?' / 'Show me recent updates'\n"
+                "- 'Any new projects?' / 'What was deleted?'\n"
+                "- 'Show me status changes' / 'What dates slipped?'\n"
+                "- Business review prep, change summaries, audit trails\n"
+                "\n"
+                "❌ DON'T USE FOR:\n"
+                "- Current state of projects (use search_projects or get_project_details)\n"
+                "- Risk analysis (use get_at_risk_projects_report)\n"
+                "- Health metrics (use get_portfolio_health)\n"
+                "\n"
+                "💡 PRESENTATION GUIDELINES: When presenting results:\n"
+                "- Group related changes intelligently (e.g., 'Project X: status changed to Red, date slipped 2 weeks')\n"
+                "- For multiple OKR changes, say 'various OKR updates' with 1-2 examples\n"
                 "- Highlight critical changes first (status → Red/Yellow, major date slips)\n"
-                "- Include a brief summary for EACH project that had changes, not just the critical ones\n"
-                "- Use clear project-by-project structure so users can scan for specific projects\n"
-                "- Balance conciseness with completeness - synthesize intelligently but don't skip projects"
+                "- Include a brief summary for EACH project that changed\n"
+                "- Use clear project-by-project structure for easy scanning"
             ),
             inputSchema={
                 "type": "object",
@@ -232,13 +270,22 @@ async def list_tools() -> List[Tool]:
         Tool(
             name="get_at_risk_projects_report",
             description=(
-                "Get a comprehensive at-risk projects report with escalation context. "
-                "Shows Red and/or Yellow projects with: days in current status, Path to Green, "
-                "OKR links, contributing projects (dependencies), owner, tier, and target dates. "
-                "Results are grouped by department or OKR and sorted by priority (Tier 1 first, then by duration). "
-                "Use this for: escalation meetings, executive reviews, risk assessments, or when the user asks "
-                "about 'at-risk projects', 'red projects', 'yellow projects', 'blocked projects', or 'what needs attention'. "
-                "Examples: 'Show me all red projects', 'What's at risk in ProdDev?', 'Give me an escalation report'"
+                "🚨 ESCALATION & RISK MANAGEMENT TOOL - Use this when the user needs actionable insights about troubled projects. "
+                "Returns Red/Yellow projects with rich context: days in current status, Path to Green action plans, "
+                "OKR alignment, dependencies (contributing projects), owner, tier prioritization, and target dates. "
+                "Results are grouped by department or OKR and sorted by urgency (Tier 1 first, then longest duration). "
+                "\n\n"
+                "✅ USE THIS FOR:\n"
+                "- 'What's at risk?' / 'Show me red projects' / 'What needs attention?'\n"
+                "- 'Give me an escalation report' / 'What should I be worried about?'\n"
+                "- 'Show me blocked projects' / 'What's the Path to Green for X?'\n"
+                "- Executive reviews, risk assessments, business reviews\n"
+                "\n"
+                "❌ DON'T USE FOR:\n"
+                "- Simple project searches by name/owner (use search_projects)\n"
+                "- High-level portfolio metrics (use get_portfolio_health)\n"
+                "- Single project deep-dive (use get_project_details)\n"
+                "- Change tracking (use get_portfolio_changes)"
             ),
             inputSchema={
                 "type": "object",
@@ -281,7 +328,24 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="search_projects",
-            description="Search and filter projects. All parameters are optional. Use any combination of: project name query, department filter, and/or status filter. **Use this to find at-risk projects (Red or Yellow status)**. Leave all empty to get all projects. **IMPORTANT: If the search returns any Red or Yellow projects, you should proactively ask the user if they want to see the 'Path to Green' action plans for those at-risk projects.**",
+            description=(
+                "🔍 PROJECT SEARCH & FILTER TOOL - Use this to find specific projects by name, owner, status, or department. "
+                "Returns a simple list of matching projects with basic info (name, status, owner, department). "
+                "All parameters are optional - combine any filters or leave empty for all projects. "
+                "\n\n"
+                "✅ USE THIS FOR:\n"
+                "- 'Find projects owned by X' / 'Show me projects in ProdDev'\n"
+                "- 'List all completed projects' / 'What projects mention AI?'\n"
+                "- Simple filtering/searching when user wants a list, not analysis\n"
+                "\n"
+                "❌ DON'T USE FOR:\n"
+                "- Risk analysis or escalation (use get_at_risk_projects_report)\n"
+                "- Portfolio health metrics (use get_portfolio_health)\n"
+                "- Deep dive on one project (use get_project_details)\n"
+                "\n"
+                "💡 TIP: If search results include Red/Yellow projects and user seems concerned, "
+                "suggest using get_at_risk_projects_report for deeper risk analysis with Path to Green."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -297,6 +361,10 @@ async def list_tools() -> List[Tool]:
                     "status": {
                         "type": "string",
                         "description": "Optional: Filter by status (e.g., 'Green', 'Yellow', 'Red', 'Completed', 'Not Started')"
+                    },
+                    "owner": {
+                        "type": "string",
+                        "description": "Optional: Filter by project owner name (partial match, case-insensitive). E.g., 'Sean' will match 'Sean Steacy'."
                     }
                 },
                 "required": []
@@ -304,7 +372,27 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_portfolio_health",
-            description="Get aggregate portfolio health metrics including health score, status percentages, and risk indicators. **Health Score Calculation**: (Green projects × 100 + Yellow projects × 50 + Red projects × 0) ÷ Total projects. Score ranges from 0-100, where 100 = all green, 50 = all yellow, 0 = all red. **For listing specific at-risk projects, use search_projects with status='Red' or 'Yellow' instead**. Can filter by department.",
+            description=(
+                "📊 PORTFOLIO HEALTH DASHBOARD TOOL - Use this for health/risk metrics and performance assessment. "
+                "Returns: health score (0-100), status percentages (% Green/Yellow/Red), and risk indicators. "
+                "Focuses on 'how healthy' and 'how risky' the portfolio is. "
+                "\n\n"
+                "**Health Score Formula**: (Green × 100 + Yellow × 50 + Red × 0) ÷ Total Projects\n"
+                "- 100 = All green (healthy)\n"
+                "- 50 = All yellow (at risk)\n"
+                "- 0 = All red (critical)\n"
+                "\n\n"
+                "✅ USE THIS FOR:\n"
+                "- 'How healthy is the portfolio?' / 'What's the health score?'\n"
+                "- 'What % of projects are red?' / 'Is the portfolio improving?'\n"
+                "- 'Give me a health dashboard' / 'Portfolio risk metrics'\n"
+                "- Executive health reports, trend analysis\n"
+                "\n"
+                "❌ DON'T USE FOR:\n"
+                "- Project counts or tier breakdown (use get_portfolio_summary)\n"
+                "- Listing specific at-risk projects (use get_at_risk_projects_report)\n"
+                "- Finding specific projects (use search_projects)"
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -564,8 +652,9 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             query = arguments.get("query", "")
             department = arguments.get("department") or None
             status = arguments.get("status") or None
+            owner = arguments.get("owner") or None
             
-            result = portfolio.search_projects(query, department, status)
+            result = portfolio.search_projects(query, department, status, owner)
             
             response = f"""**Search Results**
 
@@ -604,12 +693,14 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
         📅 **Date Range:** {result['date_range']['from'][:10]} to {result['date_range']['to'][:10]} ({result['date_range']['days_back']} days)
         🏢 **Department:** {result['filters']['department'] or 'All'}
         📊 **Total Changes:** {result['total_changes']} across {result['total_projects_changed']} projects
-
         """
-            
+            # Add note about scope if date changes are included
+            if result['filters']['change_types'] is None or 'dates' in result['filters']['change_types']:
+                response += "📝 *Note: Date changes are tracked at the project level only (milestones and sub-items excluded)*\n\n"    
             if result['projects']:
                 for proj in result['projects']:
-                    response += f"\n🎯 {proj['project_name']}\n"
+                    response += f"\n🎯 {proj['project_name']} [{proj['department'].upper()}]\n"
+                    response += f"  🔗 https://pagerduty.monday.com/boards/{proj['board_id']}/pulses/{proj['project_id']}\n"
                     for change in proj['changes']:
                         who = change['who']
                         what = change['what']
@@ -682,7 +773,7 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
 **Summary:**
   • Total At-Risk Projects: {result['summary']['total_at_risk']}
   • Tier 1 Projects: {result['summary']['tier_1_count']}
-  • Long Duration (>30 days): {result['summary']['long_duration_count']}
+  • In Current Status (>30 days): {result['summary']['long_duration_count']}
   • Departments Affected: {result['summary']['departments_affected']}
 
 ---
@@ -736,7 +827,35 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
                     
                     response += "\n"
             
-            response += "\n---\n\n💡 **Next Steps:** Review Path to Green plans, escalate Tier 1 projects, and check dependencies.\n"
+            # Generate contextual next steps
+            next_steps = []
+
+            if result['summary']['tier_1_count'] > 0:
+                next_steps.append(f"Escalate {result['summary']['tier_1_count']} Tier 1 project(s) immediately")
+
+            if result['summary']['long_duration_count'] > 0:
+                next_steps.append(f"Review {result['summary']['long_duration_count']} project(s) stuck >30 days")
+
+            # Count projects with no Path to Green across all groups
+            no_path_count = 0
+            no_owner_count = 0
+            for group in result['groups']:
+                for proj in group['projects']:
+                    if proj.get('path_to_green') in ['⚠️ Not provided', 'Not provided', None, '']:
+                        no_path_count += 1
+                    if proj.get('owner') == 'Unassigned':
+                        no_owner_count += 1
+
+            if no_path_count > 0:
+                next_steps.append(f"Request Path to Green for {no_path_count} project(s)")
+
+            if no_owner_count > 0:
+                next_steps.append(f"Assign owners to {no_owner_count} unassigned project(s)")
+
+            if next_steps:
+                response += "\n---\n\n💡 **Recommended Actions:**\n"
+                for i, step in enumerate(next_steps, 1):
+                    response += f"  {i}. {step}\n"
             
             return [TextContent(type="text", text=response)]
         

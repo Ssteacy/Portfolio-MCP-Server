@@ -892,15 +892,16 @@ class PortfolioLogic:
             'total_count': len(okr_links)
         }
     
-    def search_projects(self, query: str, department: Optional[str] = None, status: Optional[str] = None) -> Dict:
+    def search_projects(self, query: str = "", department: Optional[str] = None, status: Optional[str] = None, owner: Optional[str] = None) -> Dict:
         """
         Search projects from cache
-        
+
         Args:
-            query: Search query (matches project name)
+            query: Search query (matches project name). Leave empty to skip name filtering.
             department: Optional department filter
             status: Optional status filter
-        
+            owner: Optional owner filter (partial match, case-insensitive)
+
         Returns:
             Dict with search results
         """
@@ -914,13 +915,18 @@ class PortfolioLogic:
                 continue
             
             for item in cache['portfolios'][dept]['items']:
-                # Name match
-                if query.lower() not in item['name'].lower():
+                # Name match (skip if query is empty)
+                if query and query.lower() not in item['name'].lower():
                     continue
                 
                 # Status filter
                 item_status = self._parse_status(item['column_values'])
                 if status and status.lower() not in item_status.lower():
+                    continue
+                
+                # Owner filter
+                item_owner = self._parse_owner(item['column_values'])
+                if owner and owner.lower() not in item_owner.lower():
                     continue
                 
                 results.append({
@@ -935,7 +941,8 @@ class PortfolioLogic:
             'query': query,
             'filters': {
                 'department': department,
-                'status': status
+                'status': status,
+                'owner': owner
             },
             'results': results,
             'total_count': len(results)
@@ -1039,9 +1046,14 @@ class PortfolioLogic:
                     
                     pulse_id = data.get('pulse_id')
                     pulse_name = data.get('pulse_name')
+                    parent_item_id = data.get('parent_item_id')
                     
                     if not pulse_id or not pulse_name:
                         continue
+                    
+                    # Skip sub-items (milestones, contributing projects) 
+                    if parent_item_id is not None: 
+                        continue 
                     
                     # Determine change type
                     change_type = None
@@ -1149,12 +1161,14 @@ class PortfolioLogic:
         # Group changes by project
         changes_by_project = {}
         for change in all_changes:
-            project_key = f"{change['project_name']} ({change['department']})"
+            project_key = f"{change['project_name']} [{change['department'].upper()}]"
             if project_key not in changes_by_project:
                 changes_by_project[project_key] = {
                     'project_name': change['project_name'],
                     'project_id': change['project_id'],
                     'department': change['department'],
+                    'board_id': board_id,
+                    'url': f"https://monday.com/boards/{board_id}/pulses/{change['project_id']}",
                     'changes': []
                 }
             
