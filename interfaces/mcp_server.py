@@ -406,6 +406,75 @@ async def list_tools() -> List[Tool]:
             }
         ),
         Tool(
+            name="get_okr_health_rollup",
+            description="""Get executive-ready strategic health rollup for all OKRs. Shows critical issues, at-risk OKRs, orphaned OKRs (without projects), and unaligned projects (without OKRs).
+
+        CRITICAL OUTPUT INSTRUCTIONS:
+        - When OKRs WITHOUT PROJECTS are truncated (showing 15 of more), you MUST include this EXACT prompt in your user-facing response: "Would you like to see the full list of OKRs without projects? I can show you all of them, or filter by department."
+        - When PROJECTS WITHOUT OKRs are truncated (showing 15 of more), you MUST include this EXACT prompt in your user-facing response: "Would you like to see the full list of unaligned projects? I can filter by status (Red/Yellow), tier, or department."
+        - Include BOTH prompts when both sections are truncated
+        - These prompts should appear at the end of your response as actionable follow-up options
+        - Use natural language prompts - never show tool syntax like get_alignment_gaps(gap_type='...')""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "department": {
+                        "type": "string",
+                        "description": "Optional department filter (e.g., 'company', 'proddev', 'secit', 'finops', 'field', 'people', 'marketing', 'legal'). If not provided, shows all departments."
+                    },
+                    "include_no_okr_alignment": {
+                        "type": "boolean",
+                        "description": "Include projects with no OKR links (default: true)"
+                    },
+                    "show_healthy": {
+                        "type": "boolean",
+                        "description": "Include healthy OKRs in output (default: false for executive brevity)"
+                    },
+                    "top_n_critical": {
+                        "type": "integer",
+                        "description": "Limit critical/at-risk sections to top N (default: 10)"
+                    }
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="get_alignment_gaps",
+            description="""Get detailed view of strategic alignment gaps. Shows either OKRs without projects (strategic goals with no execution) or projects without OKRs (work with no strategic justification). Use this to drill down into governance issues discovered by get_okr_health_rollup.
+
+        CRITICAL OUTPUT INSTRUCTIONS:
+        - This tool returns the COMPLETE, FULL list of alignment gaps - DO NOT TRUNCATE OR SUMMARIZE in your user-facing response
+        - Show ALL projects or ALL OKRs returned by this tool in your response to the user
+        - The user explicitly requested the full list - they need to see everything
+        - Do not say "and X more projects" or "... (and 50 more green projects)" - show the complete list
+        - This is a drill-down tool specifically designed to show full details after truncation in the executive rollup
+        - Present the data clearly in your response, but include every single item returned by the tool
+        - Your user-facing response must contain the full, complete list - not a summary""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "gap_type": {
+                        "type": "string",
+                        "description": "Type of gap to investigate: 'okrs_without_projects' or 'projects_without_okrs'",
+                        "enum": ["okrs_without_projects", "projects_without_okrs"]
+                    },
+                    "department": {
+                        "type": "string",
+                        "description": "Optional department filter (e.g., 'company', 'proddev', 'secit', 'finops', 'field', 'people', 'marketing', 'legal')"
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "Optional status filter (for projects_without_okrs only). E.g., 'Red', 'Yellow', 'Green'"
+                    },
+                    "tier": {
+                        "type": "string",
+                        "description": "Optional tier filter (for projects_without_okrs only). E.g., 'Tier 1', 'Tier 2', 'Tier 3'"
+                    }
+                },
+                "required": ["gap_type"]
+            }
+        ),
+        Tool(
             name="get_portfolio_schema",
             description="Get the complete structure and schema of the Monday.com portfolio system including all OKRs, boards, relationships, and column definitions. Use this FIRST to understand what data is available before answering user questions.",
             inputSchema={
@@ -648,6 +717,80 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             
             return [TextContent(type="text", text=response)]
         
+        elif name == "get_alignment_gaps":
+            gap_type = arguments.get("gap_type")
+            department = arguments.get("department") or None
+            status = arguments.get("status") or None
+            tier = arguments.get("tier") or None
+            
+            if not gap_type:
+                return [TextContent(type="text", text="Error: gap_type is required")]
+            
+            result = portfolio.get_alignment_gaps(gap_type, department, status, tier)
+            
+            if 'error' in result:
+                return [TextContent(type="text", text=result['error'])]
+            
+            response_lines = []
+            
+            if gap_type == "okrs_without_projects":
+                response_lines.append("═" * 80)
+                response_lines.append("📭 OKRs WITHOUT PROJECTS - FULL LIST")
+                response_lines.append("═" * 80)
+                response_lines.append("\"We said we'd do this, but we're not\"")
+                response_lines.append("")
+                response_lines.append(f"Department Filter: {result['department_filter']}")
+                response_lines.append(f"Total OKRs Without Projects: {result['total_count']}")
+                response_lines.append("")
+                
+                if result['okrs']:
+                    current_dept = None
+                    for okr in result['okrs']:
+                        # Group by department
+                        if okr['department'] != current_dept:
+                            current_dept = okr['department']
+                            response_lines.append(f"\n🏢 {current_dept.upper()}")
+                            response_lines.append("─" * 40)
+                        
+                        response_lines.append(f"  • {okr['okr_name']}")
+                    
+                    response_lines.append("")
+                    response_lines.append("💡 Recommended Actions:")
+                    response_lines.append("   1. Assign projects to strategic OKRs")
+                    response_lines.append("   2. Deprioritize or remove OKRs with no planned work")
+                    response_lines.append("   3. Review with department leads for Q planning")
+                else:
+                    response_lines.append("✅ No OKRs without projects found!")
+            
+            elif gap_type == "projects_without_okrs":
+                response_lines.append("═" * 80)
+                response_lines.append("🔓 PROJECTS WITHOUT OKRs - FULL LIST")
+                response_lines.append("═" * 80)
+                response_lines.append("\"We're doing this, but we don't know why\"")
+                response_lines.append("")
+                response_lines.append(f"Department Filter: {result['department_filter']}")
+                response_lines.append(f"Status Filter: {result['status_filter']}")
+                response_lines.append(f"Tier Filter: {result['tier_filter']}")
+                response_lines.append(f"Total Projects Without OKRs: {result['total_count']}")
+                response_lines.append("")
+                
+                if result['projects']:
+                    for proj in result['projects']:
+                        status_emoji = "🔴" if proj['status'] == "Red" else "🟡" if proj['status'] == "Yellow" else "⚪"
+                        response_lines.append(f"{status_emoji} {proj['name']}")
+                        response_lines.append(f"   Status: {proj['status']} | Tier: {proj['tier']} | Dept: {proj['department'].title()}")
+                        response_lines.append(f"   Owner: {proj['owner']} | Target: {proj['target_date']}")
+                        response_lines.append("")
+                    
+                    response_lines.append("💡 Recommended Actions:")
+                    response_lines.append("   1. Link projects to relevant OKRs")
+                    response_lines.append("   2. Consider killing projects with no strategic alignment")
+                    response_lines.append("   3. Review with portfolio leads to validate necessity")
+                else:
+                    response_lines.append("✅ No unaligned projects found!")
+            
+            return [TextContent(type="text", text="\n".join(response_lines))]
+        
         elif name == "search_projects":
             query = arguments.get("query", "")
             department = arguments.get("department") or None
@@ -858,6 +1001,188 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
                     response += f"  {i}. {step}\n"
             
             return [TextContent(type="text", text=response)]
+        
+        elif name == "get_okr_health_rollup":
+            department = arguments.get("department")
+            include_no_okr_alignment = arguments.get("include_no_okr_alignment", True)
+            show_healthy = arguments.get("show_healthy", False)
+            top_n_critical = arguments.get("top_n_critical", 10)
+            
+            result = portfolio.get_okr_health_rollup(
+                department=department,
+                include_no_okr_alignment=include_no_okr_alignment,
+                show_healthy=show_healthy,
+                top_n_critical=top_n_critical
+            )
+            
+            # Build executive-ready formatted output
+            from datetime import datetime
+            report_date = datetime.now().strftime("%Y-%m-%d")
+            
+            response_lines = []
+            response_lines.append(f"📊 OKR HEALTH ROLLUP - {result['department_filter'].upper()}")
+            response_lines.append(f"Report Date: {report_date}")
+            response_lines.append("")
+            response_lines.append("ℹ️  Impact Score Formula: (Red × 10) + (Yellow × 5) + (Total Projects × 0.5)")
+            response_lines.append("   This prioritizes OKRs with Red projects while accounting for overall investment volume.")
+            response_lines.append("")
+            
+            # CRITICAL ISSUES SECTION
+            if result['critical_okrs']:
+                response_lines.append("═" * 80)
+                response_lines.append("🚨 CRITICAL ISSUES - IMMEDIATE ATTENTION REQUIRED")
+                response_lines.append("═" * 80)
+                response_lines.append("")
+                
+                for idx, okr in enumerate(result['critical_okrs'], 1):
+                    response_lines.append(f"{idx}. {okr['okr_name']}")
+                    response_lines.append(f"   Department: {okr['department'].title()}")
+                    response_lines.append(f"   📊 {okr['total_projects']} projects | {okr['at_risk_count']} at risk ({okr['at_risk_percentage']:.0f}%) | Impact Score: {okr['impact_score']:.0f}")
+                    response_lines.append(f"   🔴 Red: {okr['red_count']} | 🟡 Yellow: {okr['yellow_count']} | 🟢 Green: {okr['green_count']}")
+                    response_lines.append("")
+                    
+                    # Show ALL at-risk projects (Red first, then Yellow) - NO TRUNCATION
+                    at_risk_projects = [p for p in okr['projects'] if p['status'] in ['Red', 'Yellow']]
+                    at_risk_projects.sort(key=lambda x: (0 if x['status'] == 'Red' else 1, x['tier']))
+                    
+                    if at_risk_projects:
+                        response_lines.append("   At-Risk Projects:")
+                        for proj in at_risk_projects:
+                            status_emoji = "🔴" if proj['status'] == "Red" else "🟡"
+                            response_lines.append(f"   {status_emoji} {proj['name']} - Owner: {proj['owner']} - Tier: {proj['tier']}")
+                        response_lines.append("")
+                    
+                    # Recommended action
+                    if okr['red_count'] > 0:
+                        response_lines.append(f"   💡 Recommended Action: URGENT - Review {okr['red_count']} Red project(s) with {okr['department'].title()} leadership")
+                    elif okr['at_risk_count'] > 3:
+                        response_lines.append(f"   💡 Recommended Action: High investment OKR with {okr['at_risk_count']} at-risk projects - needs strategic review")
+                    else:
+                        response_lines.append(f"   💡 Recommended Action: Monitor closely - significant risk exposure")
+                    response_lines.append("")
+            
+            # AT RISK SECTION
+            if result['at_risk_okrs']:
+                response_lines.append("═" * 80)
+                response_lines.append("⚠️  AT RISK - NEEDS MONITORING")
+                response_lines.append("═" * 80)
+                response_lines.append("")
+                
+                for okr in result['at_risk_okrs']:
+                    response_lines.append(f"• {okr['okr_name']} - {okr['department'].title()}")
+                    response_lines.append(f"  {okr['total_projects']} projects | {okr['at_risk_count']} at risk ({okr['at_risk_percentage']:.0f}%) | Impact: {okr['impact_score']:.0f}")
+                    response_lines.append(f"  🟡 Yellow: {okr['yellow_count']} | 🟢 Green: {okr['green_count']}")
+                    response_lines.append("")
+            
+            # HEALTHY SECTION (only if requested)
+            if show_healthy and result['healthy_okrs']:
+                response_lines.append("═" * 80)
+                response_lines.append("✅ HEALTHY - ON TRACK")
+                response_lines.append("═" * 80)
+                response_lines.append("")
+                
+                for okr in result['healthy_okrs'][:5]:  # Show top 5 by project count
+                    response_lines.append(f"• {okr['okr_name']} - {okr['department'].title()}")
+                    response_lines.append(f"  {okr['total_projects']} projects | 🟢 Green: {okr['green_count']} | 🔵 Blue: {okr['status_breakdown']['Blue']}")
+                    response_lines.append("")
+                
+                if len(result['healthy_okrs']) > 5:
+                    response_lines.append(f"... and {len(result['healthy_okrs']) - 5} more healthy OKR(s)")
+                    response_lines.append("")
+            
+            # OKRs WITHOUT PROJECTS SECTION (renamed from "Orphaned OKRs")
+            if result['orphaned_okrs']:
+                response_lines.append("═" * 80)
+                response_lines.append("📭 OKRs WITHOUT PROJECTS")
+                response_lines.append("═" * 80)
+                response_lines.append("\"We said we'd do this, but we're not\"")
+                response_lines.append("")
+                
+                # Apply 15-item truncation threshold
+                max_display = 15
+                okrs_to_show = result['orphaned_okrs'][:max_display]
+                
+                for okr in okrs_to_show:
+                    response_lines.append(f"• {okr['okr_name']} - {okr['department'].title()}")
+                
+                # Show truncation message if needed
+                if len(result['orphaned_okrs']) > max_display:
+                    remaining = len(result['orphaned_okrs']) - max_display
+                    response_lines.append(f"... and {remaining} more OKR(s) without projects")
+                
+                response_lines.append("")
+                response_lines.append(f"💡 Action: Review {len(result['orphaned_okrs'])} OKR(s) without projects - assign projects or deprioritize")
+                response_lines.append("")
+            
+            # PROJECTS WITHOUT OKRs SECTION (renamed from "No OKR Alignment")
+            if result['no_okr_alignment']:
+                response_lines.append("═" * 80)
+                response_lines.append("🔓 PROJECTS WITHOUT OKRs")
+                response_lines.append("═" * 80)
+                response_lines.append("\"We're doing this, but we don't know why\"")
+                response_lines.append("")
+                response_lines.append(f"{len(result['no_okr_alignment'])} projects with no OKR links")
+                response_lines.append("")
+                
+                # Apply 15-item truncation threshold
+                max_display = 15
+                projects_to_show = result['no_okr_alignment'][:max_display]
+                
+                response_lines.append("Top Unaligned Projects:")
+                for proj in projects_to_show:
+                    status_emoji = "🔴" if proj['status'] == "Red" else "🟡" if proj['status'] == "Yellow" else "⚪"
+                    response_lines.append(f"{status_emoji} {proj['name']} ({proj['status']}) - {proj['department'].title()} - Owner: {proj['owner']} - Tier: {proj['tier']}")
+                
+                # Show truncation message if needed
+                if len(result['no_okr_alignment']) > max_display:
+                    remaining = len(result['no_okr_alignment']) - max_display
+                    response_lines.append(f"... and {remaining} more unaligned project(s)")
+                
+                response_lines.append("")
+                response_lines.append("💡 Action: Review with portfolio leads to assign OKR alignment")
+                response_lines.append("")
+            
+            # EXECUTIVE SUMMARY
+            response_lines.append("═" * 80)
+            response_lines.append("📈 EXECUTIVE SUMMARY")
+            response_lines.append("═" * 80)
+            response_lines.append("")
+            
+            summary = result['summary']
+            response_lines.append(f"Total OKRs Analyzed: {summary['total_okrs_analyzed']}")
+            response_lines.append(f"  • Critical Issues: {summary['critical_okrs_count']} OKRs ({summary['critical_projects']} projects, {summary['critical_at_risk']} at risk)")
+            response_lines.append(f"  • At Risk: {summary['at_risk_okrs_count']} OKRs ({summary['at_risk_projects']} projects, {summary['at_risk_at_risk']} at risk)")
+            response_lines.append(f"  • Healthy: {summary['healthy_okrs_count']} OKRs ({summary['healthy_projects']} projects)")
+            response_lines.append(f"  • OKRs Without Projects: {summary['orphaned_okrs_count']}")
+            response_lines.append(f"  • Projects Without OKRs: {summary['unaligned_projects_count']}")
+            response_lines.append("")
+            
+            # Generate top 3 recommended actions
+            response_lines.append("Top Recommended Actions:")
+            action_num = 1
+            
+            # Action 1: Top critical OKR
+            if result['critical_okrs']:
+                top_critical = result['critical_okrs'][0]
+                response_lines.append(f"{action_num}. Review {top_critical['okr_name']} with {top_critical['department'].title()} leadership ({top_critical['total_projects']} projects, {top_critical['at_risk_count']} at risk, Impact: {top_critical['impact_score']:.0f})")
+                action_num += 1
+            
+            # Action 2: Unaligned projects
+            if summary['unaligned_projects_count'] > 0:
+                response_lines.append(f"{action_num}. Assign OKR alignment to {summary['unaligned_projects_count']} unaligned project(s)")
+                action_num += 1
+            
+            # Action 3: Orphaned OKRs
+            if summary['orphaned_okrs_count'] > 0:
+                response_lines.append(f"{action_num}. Decide on {summary['orphaned_okrs_count']} OKR(s) without projects - assign projects or deprioritize")
+                action_num += 1
+            
+            # Action 4: Second critical OKR if exists
+            if len(result['critical_okrs']) > 1 and action_num <= 3:
+                second_critical = result['critical_okrs'][1]
+                response_lines.append(f"{action_num}. Address {second_critical['okr_name']} ({second_critical['at_risk_count']} at risk)")
+            
+            return [TextContent(type="text", text="\n".join(response_lines))]
         
         elif name == "get_portfolio_schema":
             # Return the schema/structure of the portfolio system

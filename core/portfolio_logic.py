@@ -948,6 +948,145 @@ class PortfolioLogic:
             'total_count': len(results)
         }
     
+    def get_alignment_gaps(
+        self,
+        gap_type: str,
+        department: Optional[str] = None,
+        status: Optional[str] = None,
+        tier: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get detailed view of alignment gaps (OKRs without projects OR projects without OKRs).
+        
+        Args:
+            gap_type: Either "okrs_without_projects" or "projects_without_okrs"
+            department: Optional department filter
+            status: Optional status filter (for projects_without_okrs only)
+            tier: Optional tier filter (for projects_without_okrs only)
+        
+        Returns:
+            Dict with full list of alignment gaps
+        """
+        cache = self._get_cache()
+        departments_to_check = [department.lower()] if department else ["company", "proddev", "secit", "finops", "field", "people", "marketing", "legal"]
+        
+        if gap_type == "okrs_without_projects":
+            # Find all OKRs with no projects linked to them
+            all_okrs = {}
+            okrs_with_projects = set()
+            
+            # Build registry of all OKRs
+            for dept in departments_to_check:
+                if dept not in cache['okrs']:
+                    continue
+                
+                okr_data = cache['okrs'][dept]
+                
+                # Add objectives
+                for obj in okr_data.get('objectives', []):
+                    okr_name = obj.get('name', '')
+                    all_okrs[okr_name] = dept
+                
+                # Add key results
+                for kr in okr_data.get('key_results', []):
+                    okr_name = kr.get('name', '')
+                    all_okrs[okr_name] = dept
+            
+            # Find which OKRs have projects
+            for dept in departments_to_check:
+                if dept not in cache['portfolios']:
+                    continue
+                
+                portfolio = cache['portfolios'][dept]
+                
+                for item in portfolio.get('items', []):
+                    okr_links = self._parse_okr_links(item.get('column_values', []))
+                    for okr_link in okr_links:
+                        okr_name = okr_link.strip()
+                        if okr_name in all_okrs:
+                            okrs_with_projects.add(okr_name)
+            
+            # Find orphaned OKRs
+            orphaned_okrs = []
+            for okr_name, dept in all_okrs.items():
+                if okr_name not in okrs_with_projects:
+                    orphaned_okrs.append({
+                        'okr_name': okr_name,
+                        'department': dept
+                    })
+            
+            # Sort by department, then name
+            orphaned_okrs.sort(key=lambda x: (x['department'], x['okr_name']))
+            
+            return {
+                'gap_type': gap_type,
+                'department_filter': department or 'All Departments',
+                'total_count': len(orphaned_okrs),
+                'okrs': orphaned_okrs
+            }
+        
+        elif gap_type == "projects_without_okrs":
+            # Find all projects with no OKR links
+            unaligned_projects = []
+            
+            for dept in departments_to_check:
+                if dept not in cache['portfolios']:
+                    continue
+                
+                portfolio = cache['portfolios'][dept]
+                
+                for item in portfolio.get('items', []):
+                    okr_links = self._parse_okr_links(item.get('column_values', []))
+                    
+                    # Skip projects that have OKR links
+                    if okr_links:
+                        continue
+                    
+                    # Extract project details
+                    project_status = self._parse_status(item.get('column_values', []))
+                    project_tier = self._get_column_value(item.get('column_values', []), 'dropdown_mksq3s8t') or 'Not Set'
+                    
+                    # Apply filters
+                    if status and status.lower() not in project_status.lower():
+                        continue
+                    
+                    if tier and tier.lower() not in project_tier.lower():
+                        continue
+                    
+                    unaligned_projects.append({
+                        'name': item.get('name', ''),
+                        'department': dept,
+                        'status': project_status,
+                        'owner': self._parse_owner(item.get('column_values', [])),
+                        'tier': project_tier,
+                        'target_date': self._get_column_value(item.get('column_values', []), 'date4') or 'Not Set',
+                        'timeline': self._get_column_value(item.get('column_values', []), '18397281142__timerange_mm217rjj') or 'Not Set'
+                    })
+            
+            # Sort by tier (Tier 1 first), then status (Red first)
+            tier_order = {'Tier 1': 0, 'Tier 2': 1, 'Tier 3': 2, 'Not Set': 3}
+            status_order = {'Red': 0, 'Yellow': 1, 'Gray': 2, 'Green': 3, 'Blue': 4, 'Pink': 5}
+            unaligned_projects.sort(
+                key=lambda x: (
+                    tier_order.get(x['tier'], 99),
+                    status_order.get(x['status'], 99)
+                )
+            )
+            
+            return {
+                'gap_type': gap_type,
+                'department_filter': department or 'All Departments',
+                'status_filter': status or 'All',
+                'tier_filter': tier or 'All',
+                'total_count': len(unaligned_projects),
+                'projects': unaligned_projects
+            }
+        
+        else:
+            return {
+                'error': f"Invalid gap_type: '{gap_type}'. Must be 'okrs_without_projects' or 'projects_without_okrs'"
+            }
+    
     def get_portfolio_changes(
         self,
         days_back: int = 30,
@@ -1500,6 +1639,237 @@ class PortfolioLogic:
             'projects': results,
             'other_matches': other_matches  # New field for smart hybrid
         }
+    
+    def get_okr_health_rollup(
+        self,
+        department: Optional[str] = None,
+        include_no_okr_alignment: bool = True,
+        show_healthy: bool = False,
+        top_n_critical: int = 10
+    ) -> Dict[str, Any]:
+        """
+        Get executive-ready strategic health rollup for all OKRs.
+        
+        Args:
+            department: Optional department filter (e.g., 'company', 'proddev'). If None, all departments.
+            include_no_okr_alignment: Include projects with no OKR links
+            show_healthy: Include healthy OKRs in output (default: False for executive brevity)
+            top_n_critical: Limit critical/at-risk sections to top N (default: 10)
+        
+        Returns:
+            Dict with tiered OKR health metrics, orphaned OKRs, and executive summary
+        """
+        cache = self._get_cache()
+        departments_to_check = [department.lower()] if department else ["company", "proddev", "secit", "finops", "field", "people", "marketing", "legal"]
+        
+        okr_health = []
+        unaligned_projects = []
+        all_okrs_in_scope = {}  # Track all OKRs to find orphaned ones
+        
+        for dept in departments_to_check:
+            # Get portfolio and OKR data from cache
+            if dept not in cache['portfolios'] or dept not in cache['okrs']:
+                continue
+            
+            portfolio = cache['portfolios'][dept]
+            okr_data = cache['okrs'][dept]
+            
+            # Build OKR registry from OKR board
+            okrs = {}
+            
+            # Add objectives
+            for obj in okr_data.get('objectives', []):
+                okr_name = obj.get('name', '')
+                okrs[okr_name] = {
+                    'okr_name': okr_name,
+                    'department': dept,
+                    'projects': [],
+                    'status_breakdown': {'Green': 0, 'Yellow': 0, 'Red': 0, 'Blue': 0, 'Gray': 0, 'Pink': 0},
+                    'total_projects': 0,
+                    'at_risk_count': 0,
+                    'at_risk_percentage': 0.0,
+                    'red_count': 0,
+                    'yellow_count': 0,
+                    'green_count': 0,
+                    'impact_score': 0
+                }
+                all_okrs_in_scope[okr_name] = dept
+            
+            # Add key results
+            for kr in okr_data.get('key_results', []):
+                okr_name = kr.get('name', '')
+                okrs[okr_name] = {
+                    'okr_name': okr_name,
+                    'department': dept,
+                    'projects': [],
+                    'status_breakdown': {'Green': 0, 'Yellow': 0, 'Red': 0, 'Blue': 0, 'Gray': 0, 'Pink': 0},
+                    'total_projects': 0,
+                    'at_risk_count': 0,
+                    'at_risk_percentage': 0.0,
+                    'red_count': 0,
+                    'yellow_count': 0,
+                    'green_count': 0,
+                    'impact_score': 0
+                }
+                all_okrs_in_scope[okr_name] = dept
+            
+            # Process portfolio projects
+            for item in portfolio.get('items', []):
+                project_name = item.get('name', '')
+                
+                # Extract project details
+                status = self._parse_status(item.get('column_values', []))
+                owner = self._parse_owner(item.get('column_values', []))
+                tier = self._get_column_value(item.get('column_values', []), 'dropdown_mksq3s8t') or 'Not Set'
+                target_date = self._get_column_value(item.get('column_values', []), 'date4') or 'Not Set'
+                timeline = self._get_column_value(item.get('column_values', []), '18397281142__timerange_mm217rjj') or 'Not Set'
+                
+                # Get OKR links
+                okr_links = self._parse_okr_links(item.get('column_values', []))
+                
+                project_data = {
+                    'name': project_name,
+                    'department': dept,
+                    'owner': owner,
+                    'status': status,
+                    'tier': tier,
+                    'target_date': target_date,
+                    'timeline': timeline
+                }
+                
+                # Check if project has OKR links
+                if not okr_links:
+                    if include_no_okr_alignment:
+                        unaligned_projects.append(project_data)
+                else:
+                    # Link project to OKRs
+                    for okr_name in okr_links:
+                        if not okr_name:
+                            continue
+                        
+                        # Find matching OKR (exact match)
+                        if okr_name in okrs:
+                            okrs[okr_name]['projects'].append(project_data)
+                            okrs[okr_name]['total_projects'] += 1
+                            
+                            # Update status breakdown
+                            if status in okrs[okr_name]['status_breakdown']:
+                                okrs[okr_name]['status_breakdown'][status] += 1
+                            
+                            # Track specific statuses for easier access
+                            if status == 'Red':
+                                okrs[okr_name]['red_count'] += 1
+                            elif status == 'Yellow':
+                                okrs[okr_name]['yellow_count'] += 1
+                            elif status == 'Green':
+                                okrs[okr_name]['green_count'] += 1
+                            
+                            # Update at-risk count (Yellow or Red)
+                            if status in ['Yellow', 'Red']:
+                                okrs[okr_name]['at_risk_count'] += 1
+            
+            # Calculate metrics for each OKR
+            for okr_data in okrs.values():
+                if okr_data['total_projects'] > 0:
+                    okr_data['at_risk_percentage'] = (okr_data['at_risk_count'] / okr_data['total_projects']) * 100
+                    
+                    # Impact Score: Weighted formula prioritizing Red projects and total volume
+                    # Formula: (Red × 10) + (Yellow × 5) + (total_projects × 0.5)
+                    okr_data['impact_score'] = (
+                        (okr_data['red_count'] * 10) + 
+                        (okr_data['yellow_count'] * 5) + 
+                        (okr_data['total_projects'] * 0.5)
+                    )
+                    
+                    okr_health.append(okr_data)
+        
+        # Categorize OKRs into tiers
+        critical_okrs = []
+        at_risk_okrs = []
+        healthy_okrs = []
+        orphaned_okrs = []
+        
+        for okr_data in okr_health:
+            # Critical: Has Red projects OR high impact score (>20) OR high at-risk count (>3)
+            if okr_data['red_count'] > 0 or okr_data['impact_score'] > 20 or okr_data['at_risk_count'] > 3:
+                critical_okrs.append(okr_data)
+            # At Risk: Has Yellow projects but not critical
+            elif okr_data['at_risk_count'] > 0:
+                at_risk_okrs.append(okr_data)
+            # Healthy: All other OKRs with projects
+            else:
+                healthy_okrs.append(okr_data)
+        
+        # Find orphaned OKRs (OKRs with no projects)
+        okrs_with_projects = {okr['okr_name'] for okr in okr_health}
+        for okr_name, dept in all_okrs_in_scope.items():
+            if okr_name not in okrs_with_projects:
+                orphaned_okrs.append({
+                    'okr_name': okr_name,
+                    'department': dept
+                })
+        
+        # Sort each tier
+        critical_okrs.sort(key=lambda x: x['impact_score'], reverse=True)
+        at_risk_okrs.sort(key=lambda x: x['impact_score'], reverse=True)
+        healthy_okrs.sort(key=lambda x: x['total_projects'], reverse=True)
+        orphaned_okrs.sort(key=lambda x: (x['department'], x['okr_name']))
+        
+        # Sort unaligned projects by tier (Tier 1 first), then status (Red first)
+        tier_order = {'Tier 1': 0, 'Tier 2': 1, 'Tier 3': 2, 'Not Set': 3}
+        status_order = {'Red': 0, 'Yellow': 1, 'Gray': 2, 'Green': 3, 'Blue': 4, 'Pink': 5}
+        unaligned_projects.sort(
+            key=lambda x: (
+                tier_order.get(x['tier'], 99),
+                status_order.get(x['status'], 99)
+            )
+        )
+        
+        # Limit critical and at-risk to top N
+        critical_okrs = critical_okrs[:top_n_critical]
+        at_risk_okrs = at_risk_okrs[:top_n_critical]
+        
+        # Calculate summary stats
+        total_okrs_analyzed = len(okr_health)
+        total_projects_in_okrs = sum(okr['total_projects'] for okr in okr_health)
+        total_at_risk_in_okrs = sum(okr['at_risk_count'] for okr in okr_health)
+        
+        critical_projects = sum(okr['total_projects'] for okr in critical_okrs)
+        critical_at_risk = sum(okr['at_risk_count'] for okr in critical_okrs)
+        
+        at_risk_projects = sum(okr['total_projects'] for okr in at_risk_okrs)
+        at_risk_at_risk = sum(okr['at_risk_count'] for okr in at_risk_okrs)
+        
+        healthy_projects = sum(okr['total_projects'] for okr in healthy_okrs)
+        healthy_at_risk = sum(okr['at_risk_count'] for okr in healthy_okrs)
+        
+        # Build result
+        result = {
+            'department_filter': department or 'All Departments',
+            'critical_okrs': critical_okrs,
+            'at_risk_okrs': at_risk_okrs,
+            'healthy_okrs': healthy_okrs if show_healthy else [],
+            'orphaned_okrs': orphaned_okrs,
+            'no_okr_alignment': unaligned_projects if include_no_okr_alignment else [],
+            'summary': {
+                'total_okrs_analyzed': total_okrs_analyzed,
+                'total_projects_in_okrs': total_projects_in_okrs,
+                'total_at_risk_in_okrs': total_at_risk_in_okrs,
+                'critical_okrs_count': len(critical_okrs),
+                'critical_projects': critical_projects,
+                'critical_at_risk': critical_at_risk,
+                'at_risk_okrs_count': len(at_risk_okrs),
+                'at_risk_projects': at_risk_projects,
+                'at_risk_at_risk': at_risk_at_risk,
+                'healthy_okrs_count': len(healthy_okrs),
+                'healthy_projects': healthy_projects,
+                'healthy_at_risk': healthy_at_risk,
+                'orphaned_okrs_count': len(orphaned_okrs),
+                'unaligned_projects_count': len(unaligned_projects)
+            }
+        }
+        
+        return result
     
     def get_portfolio_health(self, department: Optional[str] = None) -> Dict:
         """
