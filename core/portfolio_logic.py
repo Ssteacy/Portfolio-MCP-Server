@@ -1871,6 +1871,175 @@ class PortfolioLogic:
         
         return result
     
+    def get_owner_bottlenecks(
+        self,
+        department: Optional[str] = None,
+        min_project_count: int = 2,
+        include_unassigned: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Identify owner bottlenecks - people with multiple in-progress projects
+        who represent single points of failure.
+        
+        Args:
+            department: Optional department filter
+            min_project_count: Minimum number of projects to flag as bottleneck (default: 2)
+            include_unassigned: Include projects with no owner (default: True)
+        
+        Returns:
+            Dict with bottleneck analysis data
+        """
+        cache = self._get_cache()
+        
+        # Define in-progress statuses
+        in_progress_statuses = ['Green', 'Yellow', 'Red']
+        
+        # Track owner -> projects mapping by department
+        owner_projects = {}  # {dept: {owner_name: [project_data]}}
+        unassigned_projects = []
+        
+        # Track co-ownership pairs for shared bottleneck detection
+        co_owner_pairs = {}  # {(owner1, owner2): [project_data]}
+        
+        # Determine which departments to analyze
+        departments = [department.lower()] if department else [
+            'company', 'proddev', 'secit', 'finops', 'field', 'people', 'marketing', 'legal'
+        ]
+        
+        # Collect projects by owner
+        for dept in departments:
+            if dept not in cache['portfolios']:
+                continue
+                
+            portfolio_data = cache['portfolios'][dept]
+            
+            if dept not in owner_projects:
+                owner_projects[dept] = {}
+            
+            for project in portfolio_data.get('items', []):
+                column_values = project.get('column_values', [])
+                status = self._parse_status(column_values)
+                
+                # Only consider in-progress projects
+                if status not in in_progress_statuses:
+                    continue
+                
+                # Parse owners
+                owners = self._parse_owner(column_values)
+                
+                if not owners or owners == 'Unassigned':
+                    if include_unassigned:
+                        unassigned_projects.append({
+                            'name': project.get('name', 'Unnamed'),
+                            'department': dept,
+                            'status': status,
+                            'tier': self._get_column_value(column_values, 'dropdown_mksq3s8t') or 'Not Set',
+                            'id': project.get('id')
+                        })
+                    continue
+                
+                # Split multiple owners and count for each
+                owner_list = [o.strip() for o in owners.split(',')]
+                
+                # Track co-owner pairs for shared bottleneck detection
+                if len(owner_list) > 1:
+                    # Sort to ensure consistent pair ordering
+                    sorted_owners = sorted(owner_list)
+                    for i in range(len(sorted_owners)):
+                        for j in range(i + 1, len(sorted_owners)):
+                            pair = (sorted_owners[i], sorted_owners[j])
+                            if pair not in co_owner_pairs:
+                                co_owner_pairs[pair] = []
+                            co_owner_pairs[pair].append({
+                                'name': project.get('name', 'Unnamed'),
+                                'department': dept,
+                                'status': status,
+                                'tier': self._get_column_value(column_values, 'dropdown_mksq3s8t') or 'Not Set',
+                                'id': project.get('id')
+                            })
+                
+                for owner in owner_list:
+                    if owner not in owner_projects[dept]:
+                        owner_projects[dept][owner] = []
+                    
+                    owner_projects[dept][owner].append({
+                        'name': project.get('name', 'Unnamed'),
+                        'status': status,
+                        'tier': self._get_column_value(column_values, 'dropdown_mksq3s8t') or 'Not Set',
+                        'id': project.get('id'),
+                        'co_owners': len(owner_list) > 1
+                    })
+        
+        # Collect all at-risk owners across departments
+        all_bottlenecks = []
+        
+        for dept, owners in owner_projects.items():
+            for owner, projects in owners.items():
+                if len(projects) >= min_project_count:
+                    all_bottlenecks.append({
+                        'owner': owner,
+                        'department': dept,
+                        'projects': projects,
+                        'count': len(projects)
+                    })
+        
+        # Sort by project count (descending)
+        all_bottlenecks.sort(key=lambda x: x['count'], reverse=True)
+        
+        # Categorize by risk level
+        high_risk = [b for b in all_bottlenecks if b['count'] >= 5]
+        medium_risk = [b for b in all_bottlenecks if 3 <= b['count'] < 5]
+        moderate_risk = [b for b in all_bottlenecks if b['count'] < 3]
+        
+        # Detect cross-department bottlenecks
+        owner_dept_map = {}  # {owner_name: [dept1, dept2, ...]}
+        for bottleneck in all_bottlenecks:
+            owner = bottleneck['owner']
+            dept = bottleneck['department']
+            if owner not in owner_dept_map:
+                owner_dept_map[owner] = []
+            owner_dept_map[owner].append({'dept': dept, 'count': bottleneck['count']})
+        
+        cross_dept_bottlenecks = []
+        for owner, dept_list in owner_dept_map.items():
+            if len(dept_list) > 1:
+                total_projects = sum(d['count'] for d in dept_list)
+                cross_dept_bottlenecks.append({
+                    'owner': owner,
+                    'departments': dept_list,
+                    'total_projects': total_projects
+                })
+        
+        # Sort cross-dept by total project count
+        cross_dept_bottlenecks.sort(key=lambda x: x['total_projects'], reverse=True)
+        
+        # Detect shared bottlenecks (co-owner pairs with 3+ shared projects)
+        shared_bottlenecks = []
+        for pair, projects in co_owner_pairs.items():
+            if len(projects) >= 3:
+                shared_bottlenecks.append({
+                    'owner1': pair[0],
+                    'owner2': pair[1],
+                    'shared_projects': projects,
+                    'count': len(projects)
+                })
+        
+        # Sort shared bottlenecks by count
+        shared_bottlenecks.sort(key=lambda x: x['count'], reverse=True)
+        
+        return {
+            'department_filter': department or 'All Departments',
+            'min_project_count': min_project_count,
+            'total_owners': len(all_bottlenecks),
+            'total_projects': sum(b['count'] for b in all_bottlenecks),
+            'high_risk': high_risk,
+            'medium_risk': medium_risk,
+            'moderate_risk': moderate_risk,
+            'unassigned_projects': unassigned_projects,
+            'cross_dept_bottlenecks': cross_dept_bottlenecks,
+            'shared_bottlenecks': shared_bottlenecks
+        }
+    
     def get_portfolio_health(self, department: Optional[str] = None) -> Dict:
         """
         Get portfolio health metrics from cache

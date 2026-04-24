@@ -475,6 +475,36 @@ async def list_tools() -> List[Tool]:
             }
         ),
         Tool(
+            name="get_owner_bottlenecks",
+            description="""Identify owner bottlenecks - people with multiple in-progress projects who represent single points of failure. Shows high/medium/moderate risk owners grouped by project count, plus unassigned projects. Use this to identify resource concentration risks and succession planning needs.
+
+        CRITICAL OUTPUT INSTRUCTIONS:
+        - Show the COMPLETE list of high-risk owners (5+ projects) with ALL their projects
+        - Show the COMPLETE list of medium-risk owners (3-4 projects) with ALL their projects
+        - For moderate-risk owners (2 projects), you may truncate after showing 10 owners
+        - Present the data clearly in your user-facing response
+        - This helps executives identify critical resource risks, bottlenecks, and unassigned work
+        - Include all project details (status, tier, co-ownership) for each owner""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "department": {
+                        "type": "string",
+                        "description": "Optional department filter (e.g., 'company', 'proddev', 'secit', 'finops', 'field', 'people', 'marketing', 'legal')"
+                    },
+                    "min_project_count": {
+                        "type": "integer",
+                        "description": "Minimum number of in-progress projects to flag as bottleneck (default: 2)"
+                    },
+                    "include_unassigned": {
+                        "type": "boolean",
+                        "description": "Include projects with no owner (default: true)"
+                    }
+                },
+                "required": []
+            }
+        ),
+        Tool(
             name="get_portfolio_schema",
             description="Get the complete structure and schema of the Monday.com portfolio system including all OKRs, boards, relationships, and column definitions. Use this FIRST to understand what data is available before answering user questions.",
             inputSchema={
@@ -1183,6 +1213,238 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
                 response_lines.append(f"{action_num}. Address {second_critical['okr_name']} ({second_critical['at_risk_count']} at risk)")
             
             return [TextContent(type="text", text="\n".join(response_lines))]
+        
+        elif name == "get_owner_bottlenecks":
+            department = arguments.get("department") or None
+            min_project_count = arguments.get("min_project_count", 2)
+            include_unassigned = arguments.get("include_unassigned", True)
+            
+            result = portfolio.get_owner_bottlenecks(
+                department=department,
+                min_project_count=min_project_count,
+                include_unassigned=include_unassigned
+            )
+            
+            response_lines = []
+            response_lines.append("🚨 OWNER BOTTLENECKS - CRITICAL RESOURCE RISKS")
+            response_lines.append("═" * 80)
+            response_lines.append("")
+            
+            # Summary
+            response_lines.append("📊 SUMMARY")
+            response_lines.append(f"• Department Filter: {result['department_filter']}")
+            response_lines.append(f"• Total At-Risk Owners: {result['total_owners']}")
+            response_lines.append(f"• Total At-Risk Projects: {result['total_projects']}")
+            
+            # Department breakdown
+            dept_counts = {}
+            for bottleneck in result['high_risk'] + result['medium_risk'] + result['moderate_risk']:
+                dept = bottleneck['department'].title()
+                dept_counts[dept] = dept_counts.get(dept, 0) + 1
+            
+            if dept_counts:
+                dept_summary = ', '.join([f"{dept} ({count} owners)" for dept, count in sorted(dept_counts.items())])
+                response_lines.append(f"• Departments Affected: {dept_summary}")
+            
+            response_lines.append("")
+            
+            # Cross-Department Bottlenecks
+            if result['cross_dept_bottlenecks']:
+                response_lines.append("═" * 80)
+                response_lines.append("🌐 CROSS-DEPARTMENT BOTTLENECKS")
+                response_lines.append("═" * 80)
+                response_lines.append("")
+                response_lines.append("Owners stretched across multiple departments:")
+                response_lines.append("")
+                
+                for bottleneck in result['cross_dept_bottlenecks']:
+                    owner = bottleneck['owner']
+                    total = bottleneck['total_projects']
+                    dept_breakdown = ', '.join([f"{d['dept'].title()}: {d['count']}" for d in bottleneck['departments']])
+                    
+                    response_lines.append(f"• {owner}: {total} projects across {len(bottleneck['departments'])} departments")
+                    response_lines.append(f"  {dept_breakdown}")
+                    response_lines.append("")
+                
+                response_lines.append("💡 High coordination overhead and context-switching risk")
+                response_lines.append("")
+            
+            # Shared Bottlenecks
+            if result['shared_bottlenecks']:
+                response_lines.append("═" * 80)
+                response_lines.append("🔗 SHARED BOTTLENECKS (Co-owner Pairs at Risk)")
+                response_lines.append("═" * 80)
+                response_lines.append("")
+                response_lines.append("Co-owner pairs with 3+ shared projects (losing either creates cascade failure):")
+                response_lines.append("")
+                
+                for bottleneck in result['shared_bottlenecks']:
+                    owner1 = bottleneck['owner1']
+                    owner2 = bottleneck['owner2']
+                    count = bottleneck['count']
+                    projects = bottleneck['shared_projects']
+                    
+                    # Count by status
+                    red_count = sum(1 for p in projects if p['status'] == 'Red')
+                    yellow_count = sum(1 for p in projects if p['status'] == 'Yellow')
+                    green_count = sum(1 for p in projects if p['status'] == 'Green')
+                    
+                    response_lines.append(f"• {owner1} + {owner2}: {count} shared projects")
+                    response_lines.append(f"  🔴 Red: {red_count} | 🟡 Yellow: {yellow_count} | 🟢 Green: {green_count}")
+                    response_lines.append("")
+                    response_lines.append("  Shared Projects:")
+                    for project in projects:
+                        status_emoji = {'Red': '🔴', 'Yellow': '🟡', 'Green': '🟢'}.get(project['status'], '⚪')
+                        tier_text = f" - Tier: {project['tier']}" if project['tier'] != 'Not Set' else ""
+                        response_lines.append(f"  {status_emoji} {project['name']} ({project['department'].title()}){tier_text}")
+                    response_lines.append("")
+                
+                response_lines.append("💡 Add third co-owner or redistribute to reduce shared dependency")
+                response_lines.append("")
+            
+            # High Risk Owners (5+ projects)
+            if result['high_risk']:
+                response_lines.append("═" * 80)
+                response_lines.append("🔴 HIGH RISK OWNERS (5+ projects)")
+                response_lines.append("═" * 80)
+                response_lines.append("")
+                
+                for idx, bottleneck in enumerate(result['high_risk'], 1):
+                    owner = bottleneck['owner']
+                    dept = bottleneck['department'].title()
+                    projects = bottleneck['projects']
+                    
+                    # Count by status
+                    red_count = sum(1 for p in projects if p['status'] == 'Red')
+                    yellow_count = sum(1 for p in projects if p['status'] == 'Yellow')
+                    green_count = sum(1 for p in projects if p['status'] == 'Green')
+                    at_risk_count = red_count + yellow_count
+                    
+                    response_lines.append(f"{idx}. {owner} - {dept}")
+                    response_lines.append(f"   📊 {len(projects)} projects ({at_risk_count} at-risk)")
+                    response_lines.append(f"   🔴 Red: {red_count} | 🟡 Yellow: {yellow_count} | 🟢 Green: {green_count}")
+                    response_lines.append("")
+                    response_lines.append("   Projects:")
+                    
+                    for project in projects:
+                        status_emoji = {'Red': '🔴', 'Yellow': '🟡', 'Green': '🟢'}.get(project['status'], '⚪')
+                        tier_text = f" - Tier: {project['tier']}" if project['tier'] != 'Not Set' else ""
+                        co_owner_text = " (co-owned)" if project['co_owners'] else ""
+                        response_lines.append(f"   {status_emoji} {project['name']}{tier_text}{co_owner_text}")
+                    
+                    response_lines.append("")
+                    response_lines.append("   💡 Action: URGENT - Assign co-owners or redistribute projects")
+                    response_lines.append("")
+            
+            # Medium Risk Owners (3-4 projects)
+            if result['medium_risk']:
+                response_lines.append("═" * 80)
+                response_lines.append("⚠️  MEDIUM RISK OWNERS (3-4 projects)")
+                response_lines.append("═" * 80)
+                response_lines.append("")
+                
+                for bottleneck in result['medium_risk']:
+                    owner = bottleneck['owner']
+                    dept = bottleneck['department'].title()
+                    projects = bottleneck['projects']
+                    
+                    red_count = sum(1 for p in projects if p['status'] == 'Red')
+                    yellow_count = sum(1 for p in projects if p['status'] == 'Yellow')
+                    green_count = sum(1 for p in projects if p['status'] == 'Green')
+                    at_risk_count = red_count + yellow_count
+                    
+                    response_lines.append(f"• {owner} - {dept}")
+                    response_lines.append(f"  📊 {len(projects)} projects ({at_risk_count} at-risk)")
+                    response_lines.append(f"  🔴 Red: {red_count} | 🟡 Yellow: {yellow_count} | 🟢 Green: {green_count}")
+                    response_lines.append("")
+                    
+                    for project in projects:
+                        status_emoji = {'Red': '🔴', 'Yellow': '🟡', 'Green': '🟢'}.get(project['status'], '⚪')
+                        tier_text = f" - Tier: {project['tier']}" if project['tier'] != 'Not Set' else ""
+                        co_owner_text = " (co-owned)" if project['co_owners'] else ""
+                        response_lines.append(f"  {status_emoji} {project['name']}{tier_text}{co_owner_text}")
+                    
+                    response_lines.append("")
+                    response_lines.append("  💡 Action: Consider adding co-owners for backup")
+                    response_lines.append("")
+            
+            # Moderate Risk Owners (2 projects) - Truncated
+            if result['moderate_risk']:
+                response_lines.append("═" * 80)
+                response_lines.append("⚪ MODERATE RISK OWNERS (2 projects)")
+                response_lines.append("═" * 80)
+                response_lines.append("")
+                
+                # Show first 10, truncate rest
+                display_count = min(10, len(result['moderate_risk']))
+                
+                for bottleneck in result['moderate_risk'][:display_count]:
+                    owner = bottleneck['owner']
+                    dept = bottleneck['department'].title()
+                    projects = bottleneck['projects']
+                    
+                    red_count = sum(1 for p in projects if p['status'] == 'Red')
+                    yellow_count = sum(1 for p in projects if p['status'] == 'Yellow')
+                    green_count = sum(1 for p in projects if p['status'] == 'Green')
+                    
+                    project_names = ', '.join([p['name'] for p in projects])
+                    
+                    response_lines.append(f"• {owner} - {dept}: {project_names}")
+                    response_lines.append(f"  🔴 Red: {red_count} | 🟡 Yellow: {yellow_count} | 🟢 Green: {green_count}")
+                    response_lines.append("")
+                
+                if len(result['moderate_risk']) > display_count:
+                    response_lines.append(f"... and {len(result['moderate_risk']) - display_count} more owner(s) with 2 projects")
+                    response_lines.append("")
+            
+            # Unassigned Projects
+            if include_unassigned and result['unassigned_projects']:
+                response_lines.append("═" * 80)
+                response_lines.append("🔓 UNASSIGNED PROJECTS (No Owner)")
+                response_lines.append("═" * 80)
+                response_lines.append("")
+                
+                # Group by status
+                red_unassigned = [p for p in result['unassigned_projects'] if p['status'] == 'Red']
+                yellow_unassigned = [p for p in result['unassigned_projects'] if p['status'] == 'Yellow']
+                green_unassigned = [p for p in result['unassigned_projects'] if p['status'] == 'Green']
+                
+                if red_unassigned:
+                    response_lines.append("🔴 Red Projects:")
+                    for project in red_unassigned:
+                        tier_text = f" - Tier: {project['tier']}" if project['tier'] != 'Not Set' else ""
+                        response_lines.append(f"  • {project['name']} - {project['department'].title()}{tier_text}")
+                    response_lines.append("")
+                
+                if yellow_unassigned:
+                    response_lines.append("🟡 Yellow Projects:")
+                    for project in yellow_unassigned:
+                        tier_text = f" - Tier: {project['tier']}" if project['tier'] != 'Not Set' else ""
+                        response_lines.append(f"  • {project['name']} - {project['department'].title()}{tier_text}")
+                    response_lines.append("")
+                
+                if green_unassigned:
+                    response_lines.append("🟢 Green Projects:")
+                    # Truncate green if too many
+                    display_count = min(10, len(green_unassigned))
+                    for project in green_unassigned[:display_count]:
+                        tier_text = f" - Tier: {project['tier']}" if project['tier'] != 'Not Set' else ""
+                        response_lines.append(f"  • {project['name']} - {project['department'].title()}{tier_text}")
+                    
+                    if len(green_unassigned) > display_count:
+                        response_lines.append(f"  ... and {len(green_unassigned) - display_count} more green unassigned project(s)")
+                    response_lines.append("")
+                
+                response_lines.append("💡 Action: Assign owners immediately to reduce risk")
+                response_lines.append("")
+            
+            # No bottlenecks found
+            if not result['high_risk'] and not result['medium_risk'] and not result['moderate_risk'] and not result['unassigned_projects']:
+                response_lines.append("✅ No owner bottlenecks detected!")
+                response_lines.append("")
+                response_lines.append(f"All in-progress projects have owners with fewer than {min_project_count} projects.")
+            
+            return [TextContent(type="text", text='\n'.join(response_lines))]
         
         elif name == "get_portfolio_schema":
             # Return the schema/structure of the portfolio system
