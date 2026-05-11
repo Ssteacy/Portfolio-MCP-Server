@@ -270,25 +270,21 @@ class PortfolioLogic:
         
         return 'Not Set'
     
-    def _is_milestone(self, subitem: Dict) -> bool:
-        """Check if subitem is a milestone"""
-        for col in subitem.get('column_values', []):
-            # Check by type instead of ID (checkbox type is 'checkbox')
-            if col.get('type') == 'checkbox':
-                # Check the text value (simpler than parsing JSON)
-                text = col.get('text', '')
-                if text == 'v' or text.lower() == 'checked':
-                    return True
-                # Also check the value JSON as fallback
-                value = col.get('value')
-                if value:
-                    try:
-                        data = json.loads(value)
-                        if data.get('checked') == True:
-                            return True
-                    except:
-                        pass
-        return False
+    def _is_milestone(self, subitem: Dict, department: str) -> bool:
+        """
+        Check if subitem is a milestone based on department context.
+        
+        Company Portfolio: sub-items are ALWAYS contributing projects (never milestones)
+        Department Portfolios: sub-items are ALWAYS milestones (never contributing projects)
+        
+        Args:
+            subitem: The subitem dict
+            department: The department name (e.g., 'company', 'proddev', etc.)
+        
+        Returns:
+            True if this is a milestone (i.e., in a department portfolio)
+        """
+        return department.lower() != 'company'
     
     def _get_contributing_project_link(self, subitem: Dict) -> Optional[str]:
         """Get contributing project link from board_relation column"""
@@ -420,24 +416,27 @@ class PortfolioLogic:
 
     def _get_contributing_projects_for_report(self, project_id: str) -> List[Dict[str, str]]:
         """
-        Find all projects that depend on this project (contributing projects)
+        Find all projects that depend on this project (contributing projects).
+        
+        NOTE: Only searches Company Portfolio since that's where contributing projects live.
         
         Args:
-            project_id: The project's item ID
+            project_id: The ID of the project to search for
         
         Returns:
-            List of dicts with project name and department
+            List of dicts with parent_project and parent_department
         """
         cache = self._get_cache()
         contributing = []
         
-        # Search all portfolios for subitems that link to this project
-        for dept_name, portfolio in cache['portfolios'].items():
-            for item in portfolio['items']:
-                for subitem in item.get('subitems', []):
-                    # Skip milestones
-                    if self._is_milestone(subitem):
-                        continue
+        # Only search company portfolio - that's where contributing projects live
+        if 'company' not in cache['portfolios']:
+            return contributing
+        
+        portfolio = cache['portfolios']['company']
+        for item in portfolio['items']:
+            for subitem in item.get('subitems', []):
+                # All subitems in company portfolio are contributing projects
                     
                     # Check if this subitem links to our project
                     for col in subitem.get('column_values', []):
@@ -745,75 +744,82 @@ class PortfolioLogic:
     
     def get_contributing_projects(self, project_name: str, department: Optional[str] = None) -> Dict:
         """
-        Get contributing projects for a given project from cache
+        Get contributing projects for a given project from cache.
+        
+        NOTE: Only the Company Portfolio has contributing projects.
+        Department portfolios only have milestones.
         
         Args:
             project_name: Name of the parent project
-            department: Optional department filter
+            department: Optional department filter (will be forced to 'company')
         
         Returns:
             Dict with contributing projects
         """
         cache = self._get_cache()
         
-        # Find the project
-        departments_to_search = [department.lower()] if department else cache['portfolios'].keys()
+        # Only search company portfolio - that's where contributing projects live
+        if 'company' not in cache['portfolios']:
+            return {'error': "Company portfolio not found in cache"}
         
         parent_item = None
-        parent_dept = None
-        for dept in departments_to_search:
-            if dept not in cache['portfolios']:
-                continue
-            
-            for item in cache['portfolios'][dept]['items']:
-                if project_name.lower() in item['name'].lower():
-                    parent_item = item
-                    parent_dept = dept
-                    break
-            if parent_item:
+        for item in cache['portfolios']['company']['items']:
+            if project_name.lower() in item['name'].lower():
+                parent_item = item
                 break
         
         if not parent_item:
-            return {'error': f"Project '{project_name}' not found"}
+            return {'error': f"Project '{project_name}' not found in Company Portfolio"}
         
-        # Extract contributing projects (non-milestone subitems)
+        # All subitems in company portfolio are contributing projects
         contributing_projects = []
         for subitem in parent_item.get('subitems', []):
-            if not self._is_milestone(subitem):
-                link = self._get_contributing_project_link(subitem)
-                if link:
-                    contributing_projects.append({
-                        'name': link,
-                        'status': self._parse_subitem_mirror_column(subitem['column_values'], 'lookup_mm0esz60'),
-                        'owner': self._parse_subitem_mirror_column(subitem['column_values'], 'lookup_mm0ek9bc'),
-                        'target_date': self._parse_subitem_mirror_column(subitem['column_values'], 'lookup_mm0eq0da'),
-                        'path_to_green': self._parse_subitem_mirror_column(subitem['column_values'], 'lookup_mm1474t8'),
-                        'success_metrics': self._parse_subitem_mirror_column(subitem['column_values'], 'lookup_mm1vjwfn')
-                    })
+            link = self._get_contributing_project_link(subitem)
+            if link:
+                contributing_projects.append({
+                    'name': link,
+                    'status': self._parse_subitem_mirror_column(subitem['column_values'], 'lookup_mm0esz60'),
+                    'owner': self._parse_subitem_mirror_column(subitem['column_values'], 'lookup_mm0ek9bc'),
+                    'target_date': self._parse_subitem_mirror_column(subitem['column_values'], 'lookup_mm0eq0da'),
+                    'path_to_green': self._parse_subitem_mirror_column(subitem['column_values'], 'lookup_mm1474t8'),
+                    'success_metrics': self._parse_subitem_mirror_column(subitem['column_values'], 'lookup_mm1vjwfn')
+                })
         
         return {
             'parent_project': parent_item['name'],
-            'department': parent_dept,
+            'department': 'company',
             'contributing_projects': contributing_projects,
             'total_count': len(contributing_projects)
         }
     
     def get_milestones(self, project_name: str, department: Optional[str] = None) -> Dict:
         """
-        Get milestones for a given project from cache
+        Get milestones for a given project from cache.
+        
+        NOTE: Only Department Portfolios have milestones.
+        Company portfolio only has contributing projects.
         
         Args:
             project_name: Name of the parent project
-            department: Optional department filter
+            department: Optional department filter (excludes 'company')
         
         Returns:
             Dict with milestones
         """
         cache = self._get_cache()
         
-        # Find the project
-        departments_to_search = [department.lower()] if department else cache['portfolios'].keys()
+        # Only search department portfolios - exclude company
+        department_portfolios = ['proddev', 'secit', 'finops', 'field', 'people', 'marketing', 'legal']
         
+        if department:
+            dept_lower = department.lower()
+            if dept_lower == 'company':
+                return {'error': "Company portfolio does not have milestones. Only department portfolios track milestones."}
+            departments_to_search = [dept_lower] if dept_lower in department_portfolios else []
+        else:
+            departments_to_search = department_portfolios
+        
+        # Find the project
         parent_item = None
         parent_dept = None
         for dept in departments_to_search:
@@ -829,19 +835,18 @@ class PortfolioLogic:
                 break
         
         if not parent_item:
-            return {'error': f"Project '{project_name}' not found"}
+            return {'error': f"Project '{project_name}' not found in department portfolios"}
         
-        # Extract milestones
+        # All subitems in department portfolios are milestones
         milestones = []
         for subitem in parent_item.get('subitems', []):
-            if self._is_milestone(subitem):
-                milestones.append({
-                    'name': subitem['name'],
-                    'status': self._parse_milestone_column(subitem['column_values'], 'status'),
-                    'owner': self._parse_milestone_column(subitem['column_values'], 'people'),
-                    'target_date': self._parse_milestone_column(subitem['column_values'], 'date'),
-                    'success_metric': self._parse_milestone_column(subitem['column_values'], 'text')
-                })
+            milestones.append({
+                'name': subitem['name'],
+                'status': self._parse_milestone_column(subitem['column_values'], 'status'),
+                'owner': self._parse_milestone_column(subitem['column_values'], 'people'),
+                'target_date': self._parse_milestone_column(subitem['column_values'], 'date'),
+                'success_metric': self._parse_milestone_column(subitem['column_values'], 'text')
+            })
         
         return {
             'parent_project': parent_item['name'],

@@ -116,7 +116,7 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_contributing_projects",
-            description="Get all contributing projects (cross-department dependencies) for a parent project.",
+            description="Get all contributing projects (cross-department dependencies) for a parent project. NOTE: Only searches the Company Portfolio, as only the Company Portfolio tracks contributing projects. Department portfolios only track milestones.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -135,7 +135,7 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_milestones",
-            description="Get all milestones for a specific project. Returns milestone name, status, owner, target date, success metric, and parent project department. **CRITICAL: You MUST include the department you found the project in and you MUST include the 'success metric' field for each milestone in your response. Format: 'Milestone Name | Status | Owner | Target | Success Metric: <value>'**",
+            description="Get all milestones for a specific project. NOTE: Only searches Department Portfolios (proddev, secit, finops, field, people, marketing, legal), as only department portfolios track milestones. Company portfolio only tracks contributing projects. Returns milestone name, status, owner, target date, success metric, and parent project department. **CRITICAL: You MUST include the department you found the project in and you MUST include the 'success metric' field for each milestone in your response. Format: 'Milestone Name | Status | Owner | Target | Success Metric: <value>'**",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1331,10 +1331,6 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
                         tier_text = f" - Tier: {project['tier']}" if project['tier'] != 'Not Set' else ""
                         co_owner_text = " (co-owned)" if project['co_owners'] else ""
                         response_lines.append(f"   {status_emoji} {project['name']}{tier_text}{co_owner_text}")
-                    
-                    response_lines.append("")
-                    response_lines.append("   💡 Action: URGENT - Assign co-owners or redistribute projects")
-                    response_lines.append("")
             
             # Medium Risk Owners (3-4 projects)
             if result['medium_risk']:

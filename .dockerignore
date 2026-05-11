@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Testing
+test_*.py
+debug_*.py
+check_*.py
+diagnose_*.py
+find_*.py
+
+# Backup files
+*.bak
+
+# OS
+.DS_Store
+__MACOSX/
+
+# Local environment
+.env.local
+.env.development
