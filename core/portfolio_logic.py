@@ -720,8 +720,9 @@ class PortfolioLogic:
         # Count contributing projects and milestones
         contributing_projects = []
         milestones = []
+        dept = match['department']
         for subitem in item.get('subitems', []):
-            if self._is_milestone(subitem):
+            if self._is_milestone(subitem, dept):
                 milestones.append(subitem['name'])
             else:
                 link = self._get_contributing_project_link(subitem)
@@ -741,6 +742,100 @@ class PortfolioLogic:
             'contributing_projects_count': len(contributing_projects),
             'milestones_count': len(milestones)
         }
+    
+    def get_project_comments(self, project_name: str, department: Optional[str] = None) -> Dict:
+        """
+        Get comments/updates for a project
+        
+        Args:
+            project_name: Name of the project (partial match supported)
+            department: Optional department filter
+        
+        Returns:
+            Dict with project comments and updates
+        """
+        cache = self._get_cache()
+        
+        # Search for project
+        departments_to_search = [department.lower()] if department else cache['portfolios'].keys()
+        
+        matches = []
+        for dept in departments_to_search:
+            if dept not in cache['portfolios']:
+                continue
+            
+            for item in cache['portfolios'][dept]['items']:
+                if project_name.lower() in item['name'].lower():
+                    matches.append({
+                        'department': dept,
+                        'item': item
+                    })
+        
+        if not matches:
+            return {'error': f"No projects found matching '{project_name}'"}
+        
+        if len(matches) > 1:
+            return {
+                'error': f"Multiple projects found matching '{project_name}'",
+                'matches': [{'name': m['item']['name'], 'department': m['department']} for m in matches]
+            }
+        
+        # Single match found
+        match = matches[0]
+        item = match['item']
+        item_id = item['id']
+        
+        # Fetch updates/comments from Monday.com API
+        query = """
+        query ($itemId: ID!) {
+            items(ids: [$itemId]) {
+                updates {
+                    id
+                    body
+                    created_at
+                    creator {
+                        name
+                        email
+                    }
+                }
+            }
+        }
+        """
+        
+        variables = {"itemId": item_id}
+        
+        try:
+            response = self.client._make_request(query, variables)
+            
+            if not response or 'data' not in response or not response['data']['items']:
+                return {
+                    'project_name': item['name'],
+                    'department': match['department'],
+                    'updates': [],
+                    'message': 'No updates found for this project'
+                }
+            
+            updates = response['data']['items'][0].get('updates', [])
+            
+            # Format updates
+            formatted_updates = []
+            for update in updates:
+                formatted_updates.append({
+                    'author': update['creator']['name'],
+                    'email': update['creator']['email'],
+                    'date': update['created_at'],
+                    'comment': update['body']
+                })
+            
+            return {
+                'project_name': item['name'],
+                'department': match['department'],
+                'total_updates': len(formatted_updates),
+                'updates': formatted_updates
+            }
+        
+        except Exception as e:
+            return {'error': f"Failed to fetch comments: {str(e)}"}
     
     def get_contributing_projects(self, project_name: str, department: Optional[str] = None) -> Dict:
         """

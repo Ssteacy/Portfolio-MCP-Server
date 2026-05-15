@@ -38,6 +38,10 @@ TOOLS = {
         "handler": portfolio.get_project_details,
         "params": ["project_name", "department"]
     },
+    "get_project_comments": {
+        "handler": portfolio.get_project_comments,
+        "params": ["project_name", "department"]
+    },
     "get_contributing_projects": {
         "handler": portfolio.get_contributing_projects,
         "params": ["project_name"]

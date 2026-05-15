@@ -115,6 +115,40 @@ async def list_tools() -> List[Tool]:
             }
         ),
         Tool(
+            name="get_project_comments",
+            description=(
+                "💬 PROJECT COMMENTS & UPDATES TOOL - Use this to retrieve all comments, updates, and discussions "
+                "for a specific project. This provides context on WHY decisions were made, status changes occurred, "
+                "or dates shifted. Essential for understanding the reasoning behind project changes."
+                "\n\n"
+                "✅ USE THIS FOR:\n"
+                "- 'Why did the status change?' / 'What's the reason for the delay?'\n"
+                "- 'Show me comments on Project X' / 'What updates were posted?'\n"
+                "- Understanding context behind status/date changes\n"
+                "- Finding explanations for project decisions\n"
+                "\n"
+                "❌ DON'T USE FOR:\n"
+                "- Getting project metrics or status (use get_project_details)\n"
+                "- Searching across multiple projects (use search_projects)\n"
+                "- Activity logs of what changed (use get_portfolio_changes)"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_name": {
+                        "type": "string",
+                        "description": "Name of the project (partial match supported)"
+                    },
+                    "department": {
+                        "type": "string",
+                        "description": "Optional department filter to narrow search",
+                        "enum": ["", "company", "proddev", "secit", "finops", "field", "people", "marketing", "legal"]
+                    }
+                },
+                "required": ["project_name"]
+            }
+        ),
+        Tool(
             name="get_contributing_projects",
             description="Get all contributing projects (cross-department dependencies) for a parent project. NOTE: Only searches the Company Portfolio, as only the Company Portfolio tracks contributing projects. Department portfolios only track milestones.",
             inputSchema={
@@ -599,6 +633,45 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
   • Contributing Projects: {result['contributing_projects_count']}
   • Milestones: {result['milestones_count']}
 """
+            return [TextContent(type="text", text=response)]
+        
+        elif name == "get_project_comments":
+            project_name = arguments.get("project_name")
+            department = arguments.get("department") or None
+            
+            if not project_name:
+                return [TextContent(type="text", text="Error: project_name is required")]
+            
+            result = portfolio.get_project_comments(project_name, department)
+            
+            if 'error' in result:
+                if 'matches' in result:
+                    response = f"{result['error']}\n\n**Matches found:**\n"
+                    for match in result['matches']:
+                        response += f"  • {match['name']} ({match['department']})\n"
+                    return [TextContent(type="text", text=response)]
+                return [TextContent(type="text", text=result['error'])]
+            
+            response = f"""**Comments & Updates: {result['project_name']}**
+
+🏢 **Department:** {result['department']}
+💬 **Total Updates:** {result['total_updates']}
+
+⚠️ **Note:** Not all status changes may have associated comments. This shows only explicit updates posted by users.
+
+"""
+            
+            if result['total_updates'] == 0:
+                response += result.get('message', 'No updates found for this project')
+            else:
+                response += "**Recent Updates:**\n\n"
+                for i, update in enumerate(result['updates'], 1):
+                    response += f"**Update #{i}**\n"
+                    response += f"👤 **Author:** {update['author']} ({update['email']})\n"
+                    response += f"📅 **Date:** {update['date']}\n"
+                    response += f"💬 **Comment:**\n{update['comment']}\n\n"
+                    response += "---\n\n"
+            
             return [TextContent(type="text", text=response)]
         
         elif name == "get_contributing_projects":
